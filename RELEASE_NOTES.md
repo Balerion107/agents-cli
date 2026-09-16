@@ -12,7 +12,6 @@ All notable changes to this project will be documented in this file.
   - CI/CD templates at parity with Python.
   - The bundled skills cover Go and Python.
 - Scaffolds now default to `gemini-3.8-flash`.
-- Pin `google-adk` below 2.9.0. On 2.9.0 a Cloud Run agent's prompts and responses stopped reaching BigQuery Agent Analytics, leaving `completions_view` empty.
 - `agents-cli scaffold create` no longer asks for a region when the deployment target is `none`.
 - The one-off `agents-cli run` no longer prints stop and resume hints for a server it did not leave running.
 - `agents-cli deploy` prints how to talk to a Cloud Run agent once the deploy finishes.
@@ -32,6 +31,7 @@ All notable changes to this project will be documented in this file.
 - The `run` resume hint includes `--url` and the other routing flags.
 - `agents-cli info --json` reports `root_agent_name`.
 - `agents-cli extension add` no longer copies ignored files from a `local@` source.
+- Pin `google-adk` below 2.9.0. On 2.9.0 a Cloud Run agent's prompts and responses stopped reaching BigQuery Agent Analytics.
 - Fix the macOS-only `sed` in the Starter Pack migration guide and spell out the dry-run and apply steps.
   - https://github.com/google/agents-cli/issues/78
 
