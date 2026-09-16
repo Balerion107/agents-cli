@@ -13,40 +13,40 @@
 # limitations under the License.
 
 steps:
+{%- if cookiecutter.deployment_target == 'cloud_run' or cookiecutter.deployment_target == 'gke' %}
+
   # Build and Push
   - name: "gcr.io/cloud-builders/docker"
+    id: build-image
+    entrypoint: /bin/bash
     args:
-      [
-        "build",
-        "-t",
-        "$_REGION-docker.pkg.dev/$PROJECT_ID/$_ARTIFACT_REGISTRY_REPO_NAME/$_CONTAINER_NAME{%- if cookiecutter.deployment_target == 'gke' %}:$SHORT_SHA{%- endif %}",
-        "--build-arg",
-        "COMMIT_SHA=$COMMIT_SHA",
-        ".",
-      ]
-  - name: "gcr.io/cloud-builders/docker"
-    args:
-      [
-        "push",
-        "$_REGION-docker.pkg.dev/$PROJECT_ID/$_ARTIFACT_REGISTRY_REPO_NAME/$_CONTAINER_NAME{%- if cookiecutter.deployment_target == 'gke' %}:$SHORT_SHA{%- endif %}",
-      ]
+      - "-c"
+      - |
+        docker build \
+          -t $_REGION-docker.pkg.dev/$PROJECT_ID/$_ARTIFACT_REGISTRY_REPO_NAME/$_CONTAINER_NAME:$SHORT_SHA \
+          .
+        docker push $_REGION-docker.pkg.dev/$PROJECT_ID/$_ARTIFACT_REGISTRY_REPO_NAME/$_CONTAINER_NAME:$SHORT_SHA
+{%- endif %}
+{%- if cookiecutter.deployment_target == 'cloud_run' %}
 
-  {%- if cookiecutter.deployment_target == 'cloud_run' %}
-
-  # Deploy to Staging (Cloud Run)
   - name: "gcr.io/cloud-builders/gcloud"
     id: deploy-staging
-    entrypoint: gcloud
+    entrypoint: /bin/bash
     args:
-      - "run"
-      - "deploy"
-      - "{{cookiecutter.project_name}}"
-      - "--image"
-      - "$_REGION-docker.pkg.dev/$PROJECT_ID/$_ARTIFACT_REGISTRY_REPO_NAME/$_CONTAINER_NAME"
-      - "--region"
-      - "${_REGION}"
-      - "--project"
-      - "${_STAGING_PROJECT_ID}"
+      - "-c"
+      - |
+        curl -LsSf https://astral.sh/uv/0.11.7/install.sh | sh
+        export PATH="$$HOME/.local/bin:$$PATH"
+        {%- if cookiecutter.wheel_gcs_uri %}
+        gsutil cp {{ cookiecutter.wheel_gcs_uri }} /tmp/
+        uvx --from /tmp/{{ cookiecutter.wheel_gcs_uri.split('/')[-1] }} google-agents-cli deploy \
+        {%- else %}
+        uvx google-agents-cli{{ cookiecutter.agents_cli_version_pin }} deploy \
+        {%- endif %}
+          --project ${_STAGING_PROJECT_ID} \
+          --region ${_REGION} \
+          --image $_REGION-docker.pkg.dev/$PROJECT_ID/$_ARTIFACT_REGISTRY_REPO_NAME/$_CONTAINER_NAME:$SHORT_SHA \
+          --update-env-vars="OTEL_RESOURCE_ATTRIBUTES=service.version=$COMMIT_SHA"
 
   # Fetch Staging Service URL
   - name: "gcr.io/cloud-builders/gcloud"
@@ -66,21 +66,7 @@ steps:
       - "-c"
       - |
         echo $(gcloud auth print-identity-token -q) > id_token.txt
-
-  # Load Testing (Go-based)
-  - name: "golang:1.26"
-    id: load_test
-    entrypoint: /bin/bash
-    args:
-      - "-c"
-      - |
-        export _ID_TOKEN=$(cat id_token.txt)
-        export _STAGING_URL=$(cat staging_url.txt)
-        go test -v -tags=load ./e2e/load_test/... \
-          -staging-url=$$_STAGING_URL \
-          -duration=30s -users=10 -ramp=0.5
-
-  {%- elif cookiecutter.deployment_target == 'gke' %}
+{%- elif cookiecutter.deployment_target == 'gke' %}
 
   # Deploy to Staging GKE
   - name: "gcr.io/cloud-builders/gcloud"
@@ -89,32 +75,120 @@ steps:
     args:
       - "-c"
       - |
-        gcloud container clusters get-credentials ${_GKE_CLUSTER_NAME} --region ${_REGION} --project ${_STAGING_PROJECT_ID}
-        kubectl set image deployment/{{cookiecutter.project_name}} \
-          {{cookiecutter.project_name}}=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO_NAME}/${_CONTAINER_NAME}:$SHORT_SHA -n {{cookiecutter.project_name}}
-        EXTERNAL_IP=$$(kubectl get svc {{cookiecutter.project_name}} -n {{cookiecutter.project_name}} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-        [ -n "$$EXTERNAL_IP" ] && kubectl set env deployment/{{cookiecutter.project_name}} APP_URL=http://$$EXTERNAL_IP:8080 -n {{cookiecutter.project_name}}
-        kubectl rollout status deployment/{{cookiecutter.project_name}} -n {{cookiecutter.project_name}} --timeout=300s
+        curl -LsSf https://astral.sh/uv/0.11.7/install.sh | sh
+        export PATH="$$HOME/.local/bin:$$PATH"
+        {%- if cookiecutter.wheel_gcs_uri %}
+        gsutil cp {{ cookiecutter.wheel_gcs_uri }} /tmp/
+        uvx --from /tmp/{{ cookiecutter.wheel_gcs_uri.split('/')[-1] }} google-agents-cli deploy \
+        {%- else %}
+        uvx google-agents-cli{{ cookiecutter.agents_cli_version_pin }} deploy \
+        {%- endif %}
+          --project ${_STAGING_PROJECT_ID} \
+          --region ${_REGION} \
+          --cluster-name ${_GKE_CLUSTER_NAME} \
+          --image $_REGION-docker.pkg.dev/$PROJECT_ID/$_ARTIFACT_REGISTRY_REPO_NAME/$_CONTAINER_NAME:$SHORT_SHA \
+          --update-env-vars="OTEL_RESOURCE_ATTRIBUTES=service.version=$COMMIT_SHA"
 
-  # Load Testing (Go-based)
+  # Get GKE credentials for port-forward
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: get-gke-credentials
+    entrypoint: /bin/bash
+    args:
+      - "-c"
+      - |
+        gcloud container clusters get-credentials ${_GKE_CLUSTER_NAME} --region ${_REGION} --project ${_STAGING_PROJECT_ID}
+{%- elif cookiecutter.deployment_target == 'agent_runtime' %}
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: deploy-staging
+    entrypoint: /bin/bash
+    args:
+      - "-c"
+      - |
+        curl -LsSf https://astral.sh/uv/0.11.7/install.sh | sh
+        export PATH="$$HOME/.local/bin:$$PATH"
+        {%- if cookiecutter.wheel_gcs_uri %}
+        gsutil cp {{ cookiecutter.wheel_gcs_uri }} /tmp/
+        uvx --from /tmp/{{ cookiecutter.wheel_gcs_uri.split('/')[-1] }} google-agents-cli deploy \
+        {%- else %}
+        uvx google-agents-cli{{ cookiecutter.agents_cli_version_pin }} deploy \
+        {%- endif %}
+          --project ${_STAGING_PROJECT_ID} \
+          --region ${_REGION} \
+          --service-account=${_APP_SERVICE_ACCOUNT_STAGING} \
+          --update-env-vars="OTEL_RESOURCE_ATTRIBUTES=service.version=${COMMIT_SHA},LOGS_BUCKET_NAME=${_LOGS_BUCKET_NAME_STAGING}"
+
+
+  - name: gcr.io/cloud-builders/gcloud
+    id: fetch-auth-token
+    entrypoint: /bin/bash
+    args:
+      - "-c"
+      - |
+        echo $(gcloud auth print-access-token -q) > auth_token.txt
+{%- endif %}
+
+{%- if cookiecutter.deployment_target == 'cloud_run' %}
+  - name: "golang:1.26"
+    id: load_test
+    entrypoint: /bin/bash
+    args:
+      - "-c"
+      - |
+        mkdir -p e2e/load_test/.results
+        export _ID_TOKEN=$(cat id_token.txt)
+        export _STAGING_URL=$(cat staging_url.txt)
+        set -o pipefail
+        go test -v -tags=load ./e2e/load_test/... \
+          -staging-url=$$_STAGING_URL \
+          -duration=30s -users=10 -ramp=0.5 2>&1 | tee e2e/load_test/.results/results.log
+{%- elif cookiecutter.deployment_target == 'gke' %}
   - name: "gcr.io/cloud-builders/gcloud"
     id: load_test
     entrypoint: /bin/bash
     args:
       - "-c"
       - |
+        mkdir -p e2e/load_test/.results
+        curl -sL https://go.dev/dl/go1.26.5.linux-amd64.tar.gz | tar -C /usr/local -xz
+        export PATH="$$PATH:/usr/local/go/bin"
         gcloud container clusters get-credentials ${_GKE_CLUSTER_NAME} --region ${_REGION} --project ${_STAGING_PROJECT_ID}
         kubectl port-forward svc/{{cookiecutter.project_name}} 8080:8080 -n {{cookiecutter.project_name}} &
         PF_PID=$$!
         sleep 5
+        set -o pipefail
         go test -v -tags=load ./e2e/load_test/... \
           -staging-url=http://127.0.0.1:8080 \
-          -duration=30s -users=10 -ramp=0.5
+          -duration=30s -users=10 -ramp=0.5 2>&1 | tee e2e/load_test/.results/results.log
         _LOAD_TEST_EXIT_CODE=$$?
         kill $$PF_PID || true
         exit $$_LOAD_TEST_EXIT_CODE
+{%- elif cookiecutter.deployment_target == 'agent_runtime' %}
+  - name: "golang:1.26"
+    id: load_test
+    entrypoint: /bin/bash
+    args:
+      - "-c"
+      - |
+        mkdir -p e2e/load_test/.results
+        export _AUTH_TOKEN=$(cat auth_token.txt)
+        set -o pipefail
+        go test -v -tags=load ./e2e/load_test/... \
+          -duration=30s -users=2 -ramp=0.5 2>&1 | tee e2e/load_test/.results/results.log
+{%- endif %}
 
-  {%- endif %}
+  # Export Load Test Results to GCS
+  - name: gcr.io/cloud-builders/gcloud
+    id: export-results-to-gcs
+    entrypoint: /bin/bash
+    args:
+      - "-c"
+      - |
+        export _TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+        gsutil -m cp -r e2e/load_test/.results gs://${_LOGS_BUCKET_NAME_STAGING}/load-test-results/results-$${_TIMESTAMP}
+        echo "_________________________________________________________________________"
+        echo "Load test results copied to gs://${_LOGS_BUCKET_NAME_STAGING}/load-test-results/results-$${_TIMESTAMP}"
+        echo "HTTP link: https://console.cloud.google.com/storage/browser/${_LOGS_BUCKET_NAME_STAGING}/load-test-results/results-$${_TIMESTAMP}"
+        echo "_________________________________________________________________________"
 
   # Trigger Prod Deployment
   - name: gcr.io/cloud-builders/gcloud
@@ -148,7 +222,10 @@ substitutions:
   _STAGING_PROJECT_ID: YOUR_STAGING_PROJECT_ID
   _REGION: us-east1
 
-logsBucket: gs://${PROJECT_ID}-{{cookiecutter.project_name}}-logs/build-logs
+logsBucket: gs://${PROJECT_ID}-{{ cookiecutter.project_name | replace('_', '-') }}-logs/build-logs
 options:
+  env:
+    - 'UV_PYTHON=3.12'
+    - 'CI=true'
   substitutionOption: ALLOW_LOOSE
   defaultLogsBucketBehavior: REGIONAL_USER_OWNED_BUCKET

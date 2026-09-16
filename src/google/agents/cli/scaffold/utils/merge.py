@@ -87,7 +87,7 @@ def _run_vendored_create(
     cli_args.extend(["--auto-approve", "--skip-deps", "--skip-checks", "--quiet"])
     cli_args.extend(args)
 
-    logging.debug(f"Running vendored create command with args: {cli_args}")
+    logging.debug("Running vendored create command with args: %s", cli_args)
 
     try:
         ctx = Context(create, info_name="create")

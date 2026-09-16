@@ -18,7 +18,14 @@ settings:
   requires_session: true
   deployment_targets: ["agent_runtime", "cloud_run", "gke", "none"]
   extra_dependencies:
-    - "google-adk[gcp,otel-gcp]>=2.6.0,<3.0.0"
+    # Capped below 2.9.0: ADK 2.9.0 rewrote telemetry/google_cloud.py's Cloud
+    # Logging export (new GCPBatchLogRecordProcessor, OTLP log exporter), and
+    # Cloud Run deploys stop producing rows in BigQuery Agent Analytics --
+    # completions_view comes back empty because the log sink's label filter no
+    # longer matches. 2.8.0 is verified good. Agent Runtime is unaffected (it
+    # exports via container stdout, not in-process).
+    # TODO: lift the cap once the ADK-side fix lands.
+    - "google-adk[gcp,otel-gcp,bigquery-analytics]>=2.7.0,<2.9.0"
     # opentelemetry-resourcedetector-gcp 1.13.0 (its only non-prerelease) is yanked
     # ("breaks imports"). ADK caps gcp-logging at <=1.12.0a0 but leaves
     # resourcedetector at <2, so the resolver reaches the broken build (or fails
@@ -37,7 +44,8 @@ settings:
   # Kept out of `extra_dependencies` so a plain `uv sync` stays lean.
   extra_optional_dependencies:
     eval:
-      - "google-adk[eval]>=2.6.0,<3.0.0"
+      # Keep in lockstep with the cap on the main google-adk pin above.
+      - "google-adk[eval]>=2.7.0,<2.9.0"
   tags: ["adk", "a2a"]
   frontend_type: "None"
-    
+

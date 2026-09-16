@@ -48,6 +48,11 @@ def metadata_to_cli_args(
     # is derived from tags and framework comes from templateconfig, and `create`
     # has no flag for either. A re-render reads them from the template again.
     skip_keys = {"is_a2a"}
+    if for_enhance:
+        # The root agent is named at create time, so `enhance` has no flag for
+        # it -- and needs none: it re-reads the name from the manifest it is
+        # standing in. Passing it would abort with "No such option".
+        skip_keys.add("root_agent_name")
     for key, value in metadata.create_params.items():
         if key in skip_keys:
             continue

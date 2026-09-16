@@ -12,11 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Get project information to access the project number
+# Get project information to access the project number.
+# depends_on defers the read to apply time, after bootstrap has enabled Cloud
+# Resource Manager.
 data "google_project" "project" {
   for_each = local.deploy_project_ids
 
   project_id = local.deploy_project_ids[each.key]
+
+  depends_on = [google_project_service.bootstrap]
 }
 
 

@@ -62,7 +62,7 @@ The important file is `app/agent.py`. Open it and you'll see two tool functions 
 ```python title="app/agent.py"
 root_agent = Agent(
     name="root_agent",
-    model=Gemini(model="gemini-3.7-flash"),
+    model=Gemini(model="gemini-3.8-flash"),
     instruction="You are a helpful AI assistant designed to provide accurate and useful information.",
     tools=[get_weather, get_current_time],
 )
@@ -111,7 +111,7 @@ Let's give the agent a personality. Open `app/agent.py` and change the instructi
 root_agent = Agent(
     name="root_agent",
     model=Gemini(
-        model="gemini-3.7-flash",
+        model="gemini-3.8-flash",
         retry_options=types.HttpRetryOptions(attempts=3),
     ),
     instruction="""You are a cheerful weather reporter who speaks in short, 

@@ -30,7 +30,7 @@ from google.cloud import bigquery
 {%- endif %}
 
 
-MODEL = "gemini-3.7-flash"
+MODEL = "{{cookiecutter.default_model}}"
 
 
 def get_weather(query: str) -> str:
@@ -67,6 +67,10 @@ def get_current_time(query: str) -> str:
 
 
 root_agent = Agent(
+    # Keep in sync with agents-cli-manifest.yaml: agents-cli derives this name
+    # from the project `name:` recorded there, and telemetry reports it as
+    # gen_ai.agent.name. Renaming the agent only here makes the two disagree,
+    # and anything selecting traces by name stops finding this agent's.
     name="{{cookiecutter.root_agent_name}}",
     model=Gemini(
         model=MODEL,

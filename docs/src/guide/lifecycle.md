@@ -95,7 +95,7 @@ from google.adk.models import Gemini
 
 root_agent = Agent(
     name="root_agent",
-    model=Gemini(model="gemini-3.7-flash"),
+    model=Gemini(model="gemini-3.8-flash"),
     instruction="You are an SRE outage-recovery assistant...",
     tools=[query_logs, check_metrics, search_runbook],
 )

@@ -172,7 +172,7 @@ def cmd_run(
         if not resolved_dataset:
             raise click.ClickException(
                 "No --dataset specified and default "
-                f"({_paths.DEFAULT_INPUT_DATASET}) not found. "
+                f"({' or '.join(_paths.DEFAULT_INPUT_DATASETS)}) not found. "
                 "Specify --dataset PATH."
             )
         # run_extension_command forces cwd=project root, so a relative --dataset

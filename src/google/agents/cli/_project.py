@@ -45,6 +45,9 @@ class ProjectConfig:
     cicd_runner: str = "skip"
     agent_gateway: bool = False
     agent_guidance_filename: str = "GEMINI.md"
+    # The ADK name of the root agent. Empty means "derive it from the project
+    # name"; see resolve_root_agent_name.
+    root_agent_name: str = ""
 
     @property
     def create_params(self) -> dict[str, Any]:
@@ -55,6 +58,7 @@ class ProjectConfig:
             "cicd_runner": self.cicd_runner,
             "agent_gateway": self.agent_gateway,
             "agent_guidance_filename": self.agent_guidance_filename,
+            "root_agent_name": self.root_agent_name,
         }
 
     @classmethod
@@ -93,6 +97,7 @@ class ProjectConfig:
         )
         cfg.is_a2a = create_params.get("is_a2a", cfg.is_a2a)
         cfg.agent_gateway = create_params.get("agent_gateway", cfg.agent_gateway)
+        cfg.root_agent_name = create_params.get("root_agent_name") or ""
 
         return cfg
 
@@ -108,10 +113,12 @@ def _warn_legacy_config() -> None:
             "\n⚠️  Legacy configuration detected in pyproject.toml.",
             fg="yellow",
             bold=True,
+            err=True,
         )
         click.secho(
             "   Run `agents-cli scaffold upgrade` to migrate to agents-cli-manifest.yaml.\n",
             fg="yellow",
+            err=True,
         )
         _WARNED_LEGACY_CONFIG = True
 
@@ -216,13 +223,15 @@ def check_cli_version(cfg: ProjectConfig) -> None:
         click.echo(
             f"\n⚠️  Version mismatch: project was scaffolded with agents-cli {acli_version},"
             f" running {__version__}.\n"
-            f"   Upgrade the CLI: uv tool install google-agents-cli@{acli_version}\n"
+            f"   Upgrade the CLI: uv tool install google-agents-cli@{acli_version}\n",
+            err=True,
         )
     elif cli_ver > project_ver:
         click.echo(
             f"\n⚠️  Version mismatch: project was scaffolded with agents-cli {acli_version},"
             f" running {__version__}.\n"
-            "   Upgrade the project: agents-cli scaffold upgrade\n"
+            "   Upgrade the project: agents-cli scaffold upgrade\n",
+            err=True,
         )
 
 
@@ -309,7 +318,7 @@ def chdir_project_root(dir: Path | None = None) -> None:
         )
     # Only announce the root when we actually move (i.e. run from a subdir).
     if root.resolve() != Path.cwd().resolve():
-        click.echo(f"Using project root directory: {root}")
+        click.echo(f"Using project root directory: {root}", err=True)
     os.chdir(root)
 
 
@@ -383,3 +392,15 @@ def root_agent_name(project_name: str) -> str:
         return "root_agent"
     # A leading digit is legal in a project name but not in an identifier.
     return f"agent_{candidate}" if candidate[0].isdigit() else candidate
+
+
+def resolve_root_agent_name(cfg: ProjectConfig) -> str:
+    """The project's root agent name: recorded in the manifest, else derived.
+
+    The recorded value wins so that renaming the agent in code stays
+    expressible. Derivation alone can only produce names that follow from the
+    project name, so a project called ``it-support-agent`` whose agent is
+    ``billing_bot`` has no way to say so -- and nothing reports the mismatch,
+    because a telemetry query filtered on the wrong name simply returns no rows.
+    """
+    return cfg.root_agent_name or root_agent_name(cfg.project_name)

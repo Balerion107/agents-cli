@@ -610,7 +610,7 @@ def setup_cicd(
     if debug:
         logging.basicConfig(level=logging.DEBUG)
         console.print("> Debug mode enabled")
-        logging.debug(f"Detected CI/CD runner: {cicd_runner}")
+        logging.debug("Detected CI/CD runner: %s", cicd_runner)
 
     # Ensure GitHub CLI is available and authenticated
     if not check_gh_cli_installed():

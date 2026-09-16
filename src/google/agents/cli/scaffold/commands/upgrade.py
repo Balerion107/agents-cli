@@ -23,7 +23,7 @@ from google.agents.cli import _tools
 from google.agents.cli._output import Console
 from google.agents.cli._project import find_project_config, find_project_root
 
-from ..utils.backup import create_project_backup
+from ..utils.backup import make_backup_pre_apply_hook
 from ..utils.generation_metadata import metadata_to_cli_args
 from ..utils.merge import run_three_way_merge
 from ..utils.upgrade import (
@@ -147,17 +147,11 @@ def upgrade(
     cli_args = metadata_to_cli_args(metadata)
 
     # -- Pre-apply hook: back up the project before writing changes ----------
-    def _backup(proj_dir: pathlib.Path) -> bool:
-        try:
-            create_project_backup(
-                proj_dir,
-                console=console,
-                auto_approve=auto_approve,
-                interactive=interactive,
-            )
-            return True
-        except click.Abort:
-            return False  # user cancelled
+    backup_hook = make_backup_pre_apply_hook(
+        console=console,
+        auto_approve=auto_approve,
+        interactive=interactive,
+    )
 
     # Post-apply: stamp the new version into the manifest
     def _update_version(proj_dir: pathlib.Path, lang: str) -> None:
@@ -180,7 +174,7 @@ def upgrade(
         dry_run=dry_run,
         interactive=interactive,
         operation_label="upgrade",
-        pre_apply_hook=_backup,
+        pre_apply_hook=backup_hook,
         post_apply_hook=_update_version,
     )
 

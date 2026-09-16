@@ -51,6 +51,13 @@ provider "google" {
   user_project_override = true
 }
 
+# Enables local.bootstrap_services only. user_project_override is deliberately
+# unset so the call is billed to the caller, not to the target project.
+provider "google" {
+  alias  = "api_bootstrap"
+  region = var.region
+}
+
 {%- if cookiecutter.deployment_target == 'gke' %}
 
 data "google_client_config" "default" {}

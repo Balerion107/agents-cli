@@ -29,10 +29,11 @@ playground:
 	@echo "==============================================================================="
 	@echo "| Starting your agent playground...                                           |"
 	@echo "|                                                                             |"
-	@echo "| Open: http://localhost:8501/ui/                                             |"
+	@echo "| Open: http://127.0.0.1:8501/ui/                                             |"
 	@echo "| Try asking: What's the weather in San Francisco?                            |"
 	@echo "==============================================================================="
-	go run . web --port 8501 api -path_prefix / webui -api_server_address http://localhost:8501
+
+	go run . web --port 8501 api -path_prefix / webui -api_server_address=
 
 # ==============================================================================
 # Local Development Commands
@@ -125,7 +126,7 @@ setup-dev-env:
 
 # Run unit and e2e tests
 test:
-	go test -v ./{{cookiecutter.agent_directory}}/... ./e2e/...
+	go test -v -tags=e2e ./...
 
 # Run load tests (requires server running on port 8000)
 # Server auto-loads .env on startup

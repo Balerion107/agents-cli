@@ -91,9 +91,9 @@ def generate_pyproject(
     }
 
     # Add debug logging
-    logging.debug(f"Template context: {context}")
+    logging.debug("Template context: %s", context)
     result = template.render(context)
-    logging.debug(f"Generated pyproject.toml:\n{result}")
+    logging.debug("Generated pyproject.toml:\n%s", result)
 
     return result
 

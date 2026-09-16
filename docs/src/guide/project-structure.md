@@ -50,7 +50,7 @@ from google.adk.apps import App
 from google.adk.models import Gemini
 from google.genai import types
 
-MODEL = "gemini-3.7-flash"
+MODEL = "gemini-3.8-flash"
 
 
 def get_weather(query: str) -> str:
@@ -87,7 +87,7 @@ The four key parts:
 1. **Tool functions** — plain Python functions with docstrings. The docstring tells the LLM when to use the tool.
 2. **`Agent`** — combines a model, instruction (system prompt), and tools.
 3. **`App`** — wraps the agent for serving. The `name` must match the directory name (`app`).
-4. **Model** — defaults to `gemini-3.7-flash`. Change it via the `MODEL` constant at the top of `agent.py`.
+4. **Model** — defaults to `gemini-3.8-flash`. Change it via the `MODEL` constant at the top of `agent.py`.
 
 ### `pyproject.toml`
 

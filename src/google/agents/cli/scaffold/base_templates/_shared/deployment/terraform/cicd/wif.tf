@@ -1,6 +1,10 @@
 
+# depends_on defers the read to apply time, after bootstrap has enabled Cloud
+# Resource Manager.
 data "google_project" "cicd_project" {
   project_id = var.cicd_runner_project_id
+
+  depends_on = [google_project_service.bootstrap]
 }
 
 resource "google_service_account_iam_member" "github_oidc_access" {

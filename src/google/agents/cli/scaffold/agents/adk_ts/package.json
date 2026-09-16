@@ -20,11 +20,17 @@
     "tsx": "^4.21.0",
     "typescript": "^5.9.0",
     "typescript-eslint": "^8.57.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "@google/adk": "^0.3.0",
     "@google/adk-devtools": "^0.3.0",
     "zod": "^4.2.1"
+  },
+  "overrides": {
+    "uuid": "^11.1.1",
+    "@opentelemetry/core": "^2.8.0",
+    "protobufjs": "^7.6.5",
+    "qs": "^6.16.0"
   }
 }

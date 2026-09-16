@@ -50,10 +50,10 @@ jobs:
           go-version: '1.26'
 
       - name: Run unit tests
-        run: go test -v ./{{cookiecutter.agent_directory}}/...
+        run: go test -v ./...
 
       - name: Run integration tests
-        run: go test -v ./e2e/integration/... -short
+        run: go test -v -tags=e2e ./e2e/integration/... -short
         env:
           GOOGLE_CLOUD_PROJECT: {% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}
           GOOGLE_CLOUD_LOCATION: global

@@ -277,6 +277,44 @@ def _run_cloud_run_deploy_with_retry(args: list[str], *, project: str | None) ->
     )
 
 
+def _print_cloud_run_next_steps(
+    *,
+    service_name: str,
+    region: str,
+    project: str | None,
+    service_url: str | None,
+) -> None:
+    """Print copy-pasteable next steps for talking to a deployed Cloud Run agent.
+
+    gcloud already prints the Service URL and a proxy hint, but nothing about
+    how to actually interact with the agent — which is exactly where users got
+    stuck (b/557288939). ``agents-cli run`` handles the identity token that
+    ``--no-allow-unauthenticated`` requires, so surface both the direct call
+    (when the URL is known) and the local-proxy flow.
+    """
+    url = (service_url or "").rstrip("/")
+    proxy_parts = ["gcloud", "run", "services", "proxy", service_name, "--region", region]
+    if project:
+        proxy_parts += ["--project", project]
+
+    click.secho("\n✅ Deployed to Cloud Run.", fg="green")
+    click.echo("\nTalk to your agent:")
+    if url:
+        click.echo(f'  agents-cli run --url {url} --mode a2a "hello"')
+    else:
+        click.echo('  agents-cli run --url <SERVICE_URL> --mode a2a "hello"')
+        click.echo(
+            "  (find <SERVICE_URL> in the Service URL above or via "
+            "`agents-cli deploy --status`)"
+        )
+    click.echo("\nOr proxy locally, then use the proxy URL:")
+    click.echo(f"  {' '.join(proxy_parts)}")
+    click.echo('  agents-cli run --url http://127.0.0.1:8080 --mode a2a "hello"')
+    click.echo(
+        "\nFor ADK agents, the ADK HTTP API is also served — swap --mode a2a for --mode adk."
+    )
+
+
 @click.command("deploy")
 @click.option("--project", default=None, help="GCP project ID.")
 @click.option("--region", default=None, help="GCP region.")
@@ -295,7 +333,10 @@ def _run_cloud_run_deploy_with_retry(args: list[str], *, project: str | None) ->
     "(Agent Runtime, Cloud Run).",
 )
 @click.option(
-    "--agent-identity", is_flag=True, default=False, help="Enable agent identity."
+    "--agent-identity/--no-agent-identity",
+    default=None,
+    help="Enable or disable Agent Identity. Passing neither leaves an existing "
+    "agent's identity untouched (on update) or disables Agent Identity (on create).",
 )
 @click.option(
     "--update-env-vars", default=None, help="Comma-separated KEY=VALUE env vars."
@@ -343,6 +384,14 @@ def _run_cloud_run_deploy_with_retry(args: list[str], *, project: str | None) ->
     type=int,
     help="Concurrent requests per container (Agent Runtime, Cloud Run). "
     f"Default: {DEFAULT_CONCURRENCY}.",
+)
+@click.option(
+    "--timeout",
+    default=None,
+    type=click.IntRange(1, 3600),
+    help="Request timeout in seconds (Cloud Run). Raise it for requests or "
+    "connections that outlive Cloud Run's 300s default, which a new service "
+    "gets. Left unset, an existing service keeps the timeout it has.",
 )
 @click.option("--service-account", default=None, help="Service account email.")
 @click.option(
@@ -480,6 +529,7 @@ def cmd_deploy(
     min_instances,
     max_instances,
     concurrency,
+    timeout,
     service_account,
     service_name_override,
     image,
@@ -596,6 +646,12 @@ def cmd_deploy(
             f"for Agent Runtime deployments (current target: {cfg.deployment_target})."
         )
 
+    if agent_identity is not None and cfg.deployment_target != "agent_runtime":
+        raise click.ClickException(
+            "--agent-identity and --no-agent-identity are only supported for "
+            f"Agent Runtime deployments (current target: {cfg.deployment_target})."
+        )
+
     # TODO: b/555632530 - extend --update-only to Cloud Run and GKE, which have
     # the same "configuration owned by Terraform" problem but are untested for it.
     if update_only and cfg.deployment_target != "agent_runtime":
@@ -622,6 +678,11 @@ def cmd_deploy(
         raise click.ClickException(
             "The --image flag is only supported for Cloud Run and GKE deployments. "
             "Agent Runtime does not support prebuilt images."
+        )
+    if timeout is not None and cfg.deployment_target != "cloud_run":
+        raise click.ClickException(
+            "The --timeout flag is only supported for Cloud Run deployments "
+            f"(current target: {cfg.deployment_target})."
         )
 
     # CPU / memory / instance / concurrency sizing works on Agent Runtime and
@@ -769,6 +830,8 @@ def cmd_deploy(
         _shape_flag("--concurrency", concurrency, DEFAULT_CONCURRENCY)
         args.append("--no-allow-unauthenticated")
         args.append("--no-cpu-throttling")
+        if timeout is not None:
+            args.extend(["--timeout", str(timeout)])
         if port:
             args.extend(["--port", str(port)])
         if iap:
@@ -861,6 +924,14 @@ def cmd_deploy(
 
         _run_cloud_run_deploy_with_retry(args, project=project)
 
+        if not no_wait:
+            _print_cloud_run_next_steps(
+                service_name=service_name,
+                region=region,
+                project=project,
+                service_url=env_var_map.get("APP_URL"),
+            )
+
     elif cfg.deployment_target == "gke":
         if no_wait:
             raise click.ClickException("--no-wait is not supported for GKE deployments.")
@@ -872,6 +943,7 @@ def cmd_deploy(
             update_env_vars=update_env_vars,
             dry_run=dry_run,
             service_name=service_name,
+            session_type=cfg.session_type,
         )
 
     else:
@@ -1035,6 +1107,7 @@ def _deploy_gke(
     update_env_vars,
     dry_run,
     service_name,
+    session_type,
 ):
     """GKE deployment: single linear flow with conditional steps.
 
@@ -1042,6 +1115,9 @@ def _deploy_gke(
     When ``image`` is None (local dev mode), runs targeted terraform + build flow.
     Both paths share cluster credentials, kubectl rollout, env-var injection
     (AGENT_VERSION, any --update-env-vars, and APP_URL), and external IP steps.
+
+    ``session_type`` selects which optional resources the targeted apply must
+    include; see ``deploy_targets`` below.
     """
     deploy_targets = [
         "google_container_cluster.app",
@@ -1052,6 +1128,7 @@ def _deploy_gke(
         "google_project_iam_member.app_sa_roles",
         "google_project_iam_member.default_compute_sa_storage_object_creator",
         "google_service_account_iam_member.workload_identity_binding",
+        "google_project_service_identity.vertex_sa",
         "kubernetes_namespace_v1.app",
         "kubernetes_service_account_v1.app",
         "kubernetes_deployment_v1.app",
@@ -1059,6 +1136,17 @@ def _deploy_gke(
         "kubernetes_horizontal_pod_autoscaler_v2.app",
         "kubernetes_pod_disruption_budget_v1.app",
     ]
+
+    if session_type == "cloud_sql":
+        deploy_targets += [
+            "random_password.db_password",
+            "google_sql_database_instance.session_db",
+            "google_sql_database.database",
+            "google_sql_user.db_user",
+            "google_secret_manager_secret.db_password",
+            "google_secret_manager_secret_version.db_password",
+            "kubernetes_secret_v1.db_password",
+        ]
     _tools.require_tool(
         "gcloud",
         "Install the Google Cloud SDK: https://cloud.google.com/sdk/docs/install",

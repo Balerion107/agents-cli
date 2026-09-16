@@ -13,11 +13,10 @@
 # limitations under the License.
 
 description: "Go agent with A2A"
-hidden: true
 example_question: "What's the weather in San Francisco?"
 settings:
   language: "go"
-  requires_session: false
+  requires_session: true
   deployment_targets: ["agent_runtime", "cloud_run", "gke", "none"]
   extra_dependencies: []
   tags: ["adk", "go", "a2a"]

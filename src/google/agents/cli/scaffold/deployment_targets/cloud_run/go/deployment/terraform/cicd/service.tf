@@ -12,12 +12,98 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Get project information to access the project number
+# Get project information to access the project number.
+# depends_on defers the read to apply time, after bootstrap has enabled Cloud
+# Resource Manager.
 data "google_project" "project" {
   for_each = local.deploy_project_ids
 
   project_id = local.deploy_project_ids[each.key]
+
+  depends_on = [google_project_service.bootstrap]
 }
+
+
+{%- if cookiecutter.session_type == "cloud_sql" %}
+
+# Generate a random password for the database user
+resource "random_password" "db_password" {
+  for_each = local.deploy_project_ids
+
+  length           = 16
+  special          = true
+  override_special = "!#$%&*()-_=+[]{}<>:?"
+}
+
+# Cloud SQL Instance
+resource "google_sql_database_instance" "session_db" {
+  for_each = local.deploy_project_ids
+
+  project             = local.deploy_project_ids[each.key]
+  name                = "${var.project_name}-db-${each.key}"
+  database_version    = "POSTGRES_15"
+  region              = var.region
+  deletion_protection = false # For easier teardown in starter packs
+
+  settings {
+    tier = "db-custom-1-3840"
+
+    backup_configuration {
+      enabled    = true
+      start_time = "03:00"
+    }
+
+    # Enable IAM authentication
+    database_flags {
+      name  = "cloudsql.iam_authentication"
+      value = "on"
+    }
+  }
+
+  depends_on = [google_project_service.deploy_project_services]
+}
+
+# Cloud SQL Database
+resource "google_sql_database" "database" {
+  for_each = local.deploy_project_ids
+
+  project  = local.deploy_project_ids[each.key]
+  name     = "${var.project_name}" # Use project name for DB to avoid conflict with default 'postgres'
+  instance = google_sql_database_instance.session_db[each.key].name
+}
+
+# Cloud SQL User
+resource "google_sql_user" "db_user" {
+  for_each = local.deploy_project_ids
+
+  project  = local.deploy_project_ids[each.key]
+  name     = "${var.project_name}" # Use project name for user to avoid conflict with default 'postgres'
+  instance = google_sql_database_instance.session_db[each.key].name
+  password = random_password.db_password[each.key].result
+}
+
+# Store the password in Secret Manager
+resource "google_secret_manager_secret" "db_password" {
+  for_each = local.deploy_project_ids
+
+  project   = local.deploy_project_ids[each.key]
+  secret_id = "${var.project_name}-db-password"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.deploy_project_services]
+}
+
+resource "google_secret_manager_secret_version" "db_password" {
+  for_each = local.deploy_project_ids
+
+  secret      = google_secret_manager_secret.db_password[each.key].id
+  secret_data = random_password.db_password[each.key].result
+}
+
+{%- endif %}
 
 resource "google_cloud_run_v2_service" "app" {
   for_each = local.deploy_project_ids
@@ -68,10 +154,45 @@ resource "google_cloud_run_v2_service" "app" {
         value = google_storage_bucket.logs_data_bucket[each.value].name
       }
 
+      # Prompt/response content capture, off by default. Set "true" to log content
+      # to OTLP log events for the Go completions view (parsed as a boolean).
       env {
         name  = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
-        value = "NO_CONTENT"
+        value = "false"
       }
+
+{%- if cookiecutter.session_type == "cloud_sql" %}
+      # Mount the Cloud SQL unix socket
+      volume_mounts {
+        name       = "cloudsql"
+        mount_path = "/cloudsql"
+      }
+
+      env {
+        name  = "INSTANCE_CONNECTION_NAME"
+        value = google_sql_database_instance.session_db[each.key].connection_name
+      }
+
+      env {
+        name = "DB_PASS"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.db_password[each.key].secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name  = "DB_NAME"
+        value = "${var.project_name}"
+      }
+
+      env {
+        name  = "DB_USER"
+        value = "${var.project_name}"
+      }
+{%- endif %}
     }
 
     service_account                  = google_service_account.app_sa[each.key].email
@@ -83,6 +204,16 @@ resource "google_cloud_run_v2_service" "app" {
     }
 
     session_affinity = true
+
+{%- if cookiecutter.session_type == "cloud_sql" %}
+    # Cloud SQL volume
+    volumes {
+      name = "cloudsql"
+      cloud_sql_instance {
+        instances = [google_sql_database_instance.session_db[each.key].connection_name]
+      }
+    }
+{%- endif %}
   }
 
   traffic {
@@ -101,5 +232,9 @@ resource "google_cloud_run_v2_service" "app" {
   # Make dependencies conditional to avoid errors.
   depends_on = [
     google_project_service.deploy_project_services,
+{%- if cookiecutter.session_type == "cloud_sql" %}
+    google_sql_user.db_user,
+    google_secret_manager_secret_version.db_password,
+{%- endif %}
   ]
 }

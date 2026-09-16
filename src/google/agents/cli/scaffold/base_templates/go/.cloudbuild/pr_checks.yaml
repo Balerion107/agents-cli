@@ -20,7 +20,7 @@ steps:
     args:
       - "-c"
       - |
-        go test -v ./{{cookiecutter.agent_directory}}/...
+        go test -v ./...
 
   # Run integration tests
   - name: "golang:1.26"
@@ -33,8 +33,8 @@ steps:
     args:
       - "-c"
       - |
-        go test -v ./e2e/integration/... -short
+        go test -v -tags=e2e ./e2e/integration/... -short
 
-logsBucket: gs://${PROJECT_ID}-{{cookiecutter.project_name}}-logs/build-logs
+logsBucket: gs://${PROJECT_ID}-{{ cookiecutter.project_name | replace('_', '-') }}-logs/build-logs
 options:
   defaultLogsBucketBehavior: REGIONAL_USER_OWNED_BUCKET

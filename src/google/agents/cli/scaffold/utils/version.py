@@ -24,7 +24,7 @@ from packaging import version as pkg_version
 
 from google.agents.cli._output import Console
 
-console = Console()
+console = Console(stderr=True)
 
 PACKAGE_NAME = "google-agents-cli"
 # The 0.0.0 sentinel used when a real version can't be determined — an
@@ -126,4 +126,4 @@ def display_update_message() -> None:
             )
     except Exception as e:
         # Don't let version checking errors affect the CLI
-        logging.debug(f"Error checking for updates: {e}")
+        logging.debug("Error checking for updates: %s", e)

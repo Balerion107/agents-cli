@@ -22,7 +22,8 @@ Single source of truth so eval commands stay consistent. Lifecycle stages:
           conversation; ``eval generate`` appends the next agent
           response — the "N+1" pattern).
       Both shapes are valid input to ``eval generate``.
-      Default location:  tests/eval/datasets/*.json
+      Default location:  tests/eval/datasets/*.json or
+                         eval/datasets/*.json (first match wins).
       Consumed by:       ``eval generate``
       Produced by:       scaffold (and, in future, ``eval dataset
                          synthesize`` when given a seed).
@@ -78,8 +79,23 @@ TRACES_FILE_PREFIX = "traces"
 # Scaffolded inputs (under the user's project root).
 # ---------------------------------------------------------------------------
 
-# Stage 1 default — the file scaffolded by ``agents-cli create``.
-DEFAULT_INPUT_DATASET = "tests/eval/datasets/basic-dataset.json"
+# Stage 1 defaults — the dataset files scaffolded by ``agents-cli create``,
+# in lookup order (first match wins). ``tests/eval`` is the Python convention;
+# Go keeps tests next to the code, so it uses a top-level ``eval`` instead.
+DEFAULT_INPUT_DATASETS = [
+    "tests/eval/datasets/basic-dataset.json",
+    "eval/datasets/basic-dataset.json",
+]
+
+# Stage 3 default — the eval config scaffolded by ``agents-cli create``, in
+# lookup order (first match wins). ``tests/eval`` is the Python convention; Go
+# keeps tests next to the code, so it uses a top-level ``eval`` instead. Mirrors
+# ``DEFAULT_INPUT_DATASETS`` so ``eval grade`` resolves its default the same,
+# language-agnostic way ``eval generate`` resolves its dataset.
+DEFAULT_EVAL_CONFIGS = [
+    "tests/eval/eval_config.yaml",
+    "eval/eval_config.yaml",
+]
 
 
 def timestamp() -> str:
@@ -103,12 +119,18 @@ def timestamped_artifact_path(directory: Path, prefix: str, ext: str = "json") -
 def resolve_input_dataset(project_root: Path, dataset: str | None) -> str | None:
     """The dataset to run inference over: the flag, else the scaffolded default.
 
+    When no ``dataset`` is given, each path in ``DEFAULT_INPUT_DATASETS`` is
+    tried in order and the first that exists is returned (first match wins).
+
     None means neither was available, which callers report as a usage error.
     """
     if dataset:
         return dataset
-    default = project_root / DEFAULT_INPUT_DATASET
-    return str(default) if default.exists() else None
+    for candidate in DEFAULT_INPUT_DATASETS:
+        path = project_root / candidate
+        if path.exists():
+            return str(path)
+    return None
 
 
 def default_traces_path(project_root: Path) -> Path:
@@ -183,3 +205,24 @@ def default_grade_results_dir(project_root: Path) -> Path:
     it knows it is going to write.
     """
     return project_root / ARTIFACTS_DIR / GRADE_RESULTS_SUBDIR
+
+
+def default_eval_config(project_root: Path) -> Path:
+    """The scaffolded eval config to grade against; first match wins.
+
+    Each path in ``DEFAULT_EVAL_CONFIGS`` is tried in order and the first that
+    exists is returned, so a Python (``tests/eval``) and a Go (top-level
+    ``eval``) project each resolve their own config without a ``--config`` flag.
+
+    When none exist, the first candidate is returned as a stable fallback.
+    ``eval grade`` passes this same value as its ``default_config_path``, which
+    makes a missing default tolerated (it falls through to the ``--metrics``
+    requirement) rather than raising "Configuration file not found".
+
+    Does NOT create the file.
+    """
+    for candidate in DEFAULT_EVAL_CONFIGS:
+        path = project_root / candidate
+        if path.exists():
+            return path
+    return project_root / DEFAULT_EVAL_CONFIGS[0]

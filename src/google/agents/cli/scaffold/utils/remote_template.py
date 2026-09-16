@@ -155,8 +155,8 @@ def check_and_execute_with_version_lock(
 
     if version:
         logging.debug(
-            f"Remote template specifies agents-cli version {version}; "
-            f"using vendored code instead."
+            "Remote template specifies agents-cli version %s; using vendored code instead.",
+            version,
         )
 
     return False
@@ -208,7 +208,7 @@ def fetch_remote_template(
         from google.agents.cli._runner import run_resolved
 
         logging.debug(
-            f"Attempting to clone remote template with Git: {shlex.join(clone_cmd)}"
+            "Attempting to clone remote template with Git: %s", shlex.join(clone_cmd)
         )
         # GIT_TERMINAL_PROMPT=0 prevents git from prompting for credentials
         result = run_resolved(
@@ -224,7 +224,8 @@ def fetch_remote_template(
             # Check if the error is related to branch not found (indicates it's likely a tag)
             if "Remote branch" in result.stderr or "not found" in result.stderr:
                 logging.debug(
-                    f"Clone with --single-branch failed, retrying without it (git_ref '{spec.git_ref}' is likely a tag)"
+                    "Clone with --single-branch failed, retrying without it (git_ref '%s' is likely a tag)",
+                    spec.git_ref,
                 )
                 clone_cmd_without_single_branch = [
                     "git",
@@ -316,9 +317,34 @@ def _detect_flat_structure(template_dir: pathlib.Path) -> bool:
             return False
 
     logging.debug(
-        f"Detected flat structure in {template_dir}: agent.py in root, no agent subdirectory"
+        "Detected flat structure in '%s': agent.py in root, no agent subdirectory",
+        template_dir,
     )
     return True
+
+
+def _get_source_agent_directory(template_dir: pathlib.Path) -> str:
+    """Return the subdirectory that holds a nested sample's ``agent.py``.
+
+    Samples following the Agent Starter Pack convention keep their code in
+    ``app/`` regardless of the folder name; others use a package named after the
+    folder. Preferring the folder-named package keeps behavior unchanged for
+    samples that already template into one directory, and falls back to ``app``
+    so ``app``-convention samples (e.g. deep-search) template into the directory
+    they actually reference — instead of splitting into two.
+
+    Args:
+        template_dir: Path to template directory
+
+    Returns:
+        The detected package directory name, defaulting to the folder-derived
+        name when neither candidate contains ``agent.py``.
+    """
+    folder_pkg = template_dir.name.replace("-", "_")
+    for candidate in (folder_pkg, "app"):
+        if (template_dir / candidate / "agent.py").exists():
+            return candidate
+    return folder_pkg
 
 
 def _infer_agent_directory_for_adk(
@@ -341,28 +367,37 @@ def _infer_agent_directory_for_adk(
 
     # Convert folder name to Python package convention (hyphens to underscores)
     folder_name = template_dir.name
-    target_agent_directory = folder_name.replace("-", "_")
+    folder_pkg = folder_name.replace("-", "_")
 
     if is_flat:
         logging.debug(
-            f"Flat structure detected: source is '.', target agent_directory is '{target_agent_directory}'"
+            "Flat structure detected: source is '.', target agent_directory is '%s'",
+            folder_pkg,
         )
         return {
             "settings": {
-                "agent_directory": target_agent_directory,
+                "agent_directory": folder_pkg,
                 "source_agent_directory": ".",  # Special value for flat structure
             },
             "has_explicit_config": False,
             "is_flat_structure": True,
         }
 
+    # Nested structure: target the sample's actual package directory so the
+    # base-template render and the remote overlay land in the same directory.
+    # Deriving the target from the folder name while the sample ships its code
+    # in `app/` produced two agent directories.
+    agent_directory = _get_source_agent_directory(template_dir)
     logging.debug(
-        f"Inferred agent_directory '{target_agent_directory}' from folder name '{folder_name}' for ADK sample"
+        "Inferred agent_directory '%s' from the sample's package layout for "
+        "ADK sample '%s'",
+        agent_directory,
+        folder_name,
     )
 
     return {
         "settings": {
-            "agent_directory": target_agent_directory,
+            "agent_directory": agent_directory,
         },
         "has_explicit_config": False,
     }
@@ -463,14 +498,15 @@ def load_remote_template_config(
             if "description" not in toml_config and "description" in project_info:
                 config["description"] = project_info["description"]
 
-            logging.debug(f"Loaded template config from {pyproject_path}")
+            logging.debug("Loaded template config from %s", pyproject_path)
         except Exception as e:
             logging.error(f"Error loading pyproject.toml config: {e}")
     else:
         # No config file found
         if is_adk_sample:
             logging.debug(
-                f"No config file found for ADK sample {template_dir.name}, will use inference"
+                "No config file found for ADK sample %s, will use inference",
+                template_dir.name,
             )
         else:
             logging.warning(
@@ -499,7 +535,8 @@ def load_remote_template_config(
             config["settings"]["source_agent_directory"] = "."
             config["is_flat_structure"] = True
             logging.debug(
-                f"Detected flat structure for non-ADK template: source='.', target='{folder_name}'"
+                "Detected flat structure for non-ADK template: source='.', target='%s'",
+                folder_name,
             )
 
     # Add metadata about configuration source
@@ -508,7 +545,7 @@ def load_remote_template_config(
     # Apply CLI overrides (highest precedence) using deep merge
     if cli_overrides:
         config = merge_template_configs(config, cli_overrides)
-        logging.debug(f"Applied CLI overrides: {cli_overrides}")
+        logging.debug("Applied CLI overrides: %s", cli_overrides)
 
     return config
 
@@ -579,11 +616,11 @@ def discover_adk_agents(repo_path: pathlib.Path) -> dict[int, dict[str, Any]]:
 
     # Search specifically for agents in python/agents/* directories
     agents_dir = repo_path / "python" / "agents"
-    logging.debug(f"Looking for agents in: {agents_dir}")
+    logging.debug("Looking for agents in: %s", agents_dir)
     if agents_dir.exists():
         all_items = list(agents_dir.iterdir())
         logging.debug(
-            f"Found items in agents directory: {[item.name for item in all_items]}"
+            "Found items in agents directory: %s", [item.name for item in all_items]
         )
 
         # Collect all agents first, then sort by configuration type
@@ -591,9 +628,9 @@ def discover_adk_agents(repo_path: pathlib.Path) -> dict[int, dict[str, Any]]:
 
         for agent_dir in sorted(agents_dir.iterdir()):
             if not agent_dir.is_dir():
-                logging.debug(f"Skipping non-directory: {agent_dir.name}")
+                logging.debug("Skipping non-directory: %s", agent_dir.name)
                 continue
-            logging.debug(f"Processing agent directory: {agent_dir.name}")
+            logging.debug("Processing agent directory: %s", agent_dir.name)
 
             try:
                 # Load configuration with ADK inference support
@@ -674,7 +711,7 @@ def parse_acli_version_from_lock(
             if package.get("name") == "google-agents-cli":
                 version = package.get("version")
                 if version:
-                    logging.debug(f"Found agents-cli version {version} in uv.lock")
+                    logging.debug("Found agents-cli version %s in uv.lock", version)
                     return version
 
     except Exception as e:

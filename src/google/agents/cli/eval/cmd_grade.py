@@ -38,8 +38,6 @@ from google.agents.cli.eval.eval_utils import (
     save_evaluation_artifacts,
 )
 
-_DEFAULT_EVAL_CONFIG_PATH = os.path.join("tests", "eval", "eval_config.yaml")
-
 # The SDK paces every metric computation through one limiter sized for the eval
 # service, including local metrics that never call it. This rate replaces it:
 # enough to keep a judge that reuses its client busy, low enough that one
@@ -103,6 +101,25 @@ def _warn_on_dropped_cases(result: EvaluationResult) -> None:
 
 _print_results_table = print_results_table
 _save_evaluation_artifacts = save_evaluation_artifacts
+
+
+def _drop_content_less_events(eval_cases: list) -> int:
+    """Remove events carrying no content, returning how many were dropped.
+
+    The eval service requires ``content`` on every event and fails the whole
+    case with ``400 ... Required field is not set`` otherwise. Inference keeps
+    actions-only events (a state delta and nothing else), which any ADK agent
+    whose callbacks write state emits on every turn, so they are dropped here
+    rather than at generate time: the trace on disk stays faithful.
+    """
+    dropped = 0
+    for case in eval_cases:
+        for turn in (case.agent_data.turns if case.agent_data else None) or []:
+            events = turn.events or []
+            kept = [event for event in events if event.content]
+            dropped += len(events) - len(kept)
+            turn.events = kept
+    return dropped
 
 
 @click.command("grade")
@@ -180,7 +197,7 @@ def cmd_grade(
         if not output_path:
             output_path = str(_paths.default_grade_results_dir(project_root))
         if not config_path:
-            config_path = str(project_root / _DEFAULT_EVAL_CONFIG_PATH)
+            config_path = str(_paths.default_eval_config(project_root))
             default_config_path = config_path
 
     metrics, local_custom_count, remote_custom_count = prepare_eval_metrics(
@@ -216,6 +233,13 @@ def cmd_grade(
         f"Running evaluation for metrics: [cyan]{', '.join(metric_names)}[/cyan] "
         f"at {qps:g}/s (--qps to change)..."
     )
+
+    dropped = _drop_content_less_events(all_eval_cases)
+    if dropped:
+        console.print(
+            f"[dim]Dropped {dropped} event(s) with no content; the eval service "
+            "rejects them.[/dim]"
+        )
 
     merged_dataset = EvaluationDataset(eval_cases=all_eval_cases)
 

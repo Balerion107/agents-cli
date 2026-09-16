@@ -49,7 +49,7 @@ _DEFAULT_STARTUP_TIMEOUT = (
 
 
 class ServerInfo(NamedTuple):
-    """A running local server's port, and whether *this* call started it.
+    """A running local server's port, PID, and whether *this* call started it.
 
     ``started`` is ``True`` only when ``ensure_server`` launched a new
     process; it is ``False`` when an already-running server was reused.
@@ -59,6 +59,7 @@ class ServerInfo(NamedTuple):
 
     port: int
     started: bool
+    pid: int
 
 
 def ensure_server(
@@ -69,6 +70,7 @@ def ensure_server(
     idle_timeout: int = _DEFAULT_IDLE_TIMEOUT,
     trace_to_cloud: bool = False,
     use_in_memory_session: bool = True,
+    keep_running: bool = False,
 ) -> ServerInfo:
     """Return a running local server's port, starting one if needed.
 
@@ -92,10 +94,13 @@ def ensure_server(
             PID file; a mismatch raises a :class:`click.ClickException`
             without terminating the existing server.  Legacy PID files that
             pre-date this field are treated as ``True``.
-
+        keep_running: Whether the caller will keep this server running after the
+            request (``--start-server``). Only affects the start message: a
+            persistent server advertises how to stop it. Does not change the
+            server lifecycle — the caller still owns teardown.
     Returns:
-        A :class:`ServerInfo` with the port and whether this call started
-        the server.
+        A :class:`ServerInfo` with the port, PID, and whether this call
+        started the server.
     """
     info = _read_pid_file(project_root)
 
@@ -131,7 +136,7 @@ def ensure_server(
                         err=True,
                     )
                 _update_activity(project_root)
-                return ServerInfo(info["port"], started=False)
+                return ServerInfo(port=info["port"], started=False, pid=info["pid"])
         else:
             # Stale PID file — clean up before starting fresh.
             _cleanup(project_root, info)
@@ -153,19 +158,32 @@ def ensure_server(
         trace_to_cloud=trace_to_cloud,
         use_in_memory_session=use_in_memory_session,
     )
-    click.secho(f"Local server started on port {port} (PID {pid})", dim=True)
-    click.secho("  Stop with: agents-cli run --stop-server", dim=True)
-    return ServerInfo(port, started=True)
+    if keep_running:
+        click.secho(f"Local server started on port {port} (PID {pid})", dim=True)
+        click.secho("  Stop with: agents-cli run --stop-server", dim=True)
+    else:
+        click.secho(
+            f"Starting a temporary local server on port {port} "
+            "(stops automatically when done).",
+            dim=True,
+        )
+    return ServerInfo(port, started=True, pid=pid)
 
 
-def stop_server(project_root: Path) -> bool:
+def stop_server(project_root: Path, pid: int | None = None) -> bool:
     """Stop the background server.
+
+    If `pid` is provided, the server is only stopped if the PID in the
+    metadata matches. This prevents a race where an invocation's teardown
+    stops a newly-started replacement server.
 
     Returns:
         ``True`` if a server was found and stopped.
     """
     info = _read_pid_file(project_root)
     if not info:
+        return False
+    if pid is not None and info.get("pid") != pid:
         return False
     _cleanup(project_root, info)
     click.secho("Local server stopped.", dim=True)
@@ -299,7 +317,7 @@ def _go_serve_command(
     cmd = ["go", "run", ".", "web", "--port", str(port)]
     if trace_to_cloud:
         cmd.append("--otel_to_cloud")
-    return [*cmd, "api", "-path_prefix", "/", "a2a"]
+    return [*cmd, "api", "-path_prefix", "/", "a2a", "appinfo"]
 
 
 # `None` = not supported yet; dispatch_language raises a clear error.

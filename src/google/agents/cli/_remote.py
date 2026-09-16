@@ -21,7 +21,8 @@ how a ``--url`` is classified and what auth token it gets.
 from __future__ import annotations
 
 import re
-from urllib.parse import urlparse
+from typing import NamedTuple
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import click
 
@@ -31,6 +32,10 @@ _AGENT_ENGINE_URL_FRAGMENT = "aiplatform.googleapis.com"
 _REASONING_ENGINE_PATH = "reasoningEngines"
 # A valid Agent Runtime host carries a location prefix: <location>-aiplatform.googleapis.com
 _AGENT_RUNTIME_HOST_RE = re.compile(rf".+-{re.escape(_AGENT_ENGINE_URL_FRAGMENT)}$")
+
+# WebSocket traffic has its own ingress; HTTP goes through reasoningEngines/v1.
+# https://github.com/GoogleCloudPlatform/generative-ai/blob/main/agents/agent_engine/tutorial_bidi_stream_v2.ipynb
+_AGENT_RUNTIME_WS_INGRESS = "reasoningEngines/ws/internal"
 
 
 def is_agent_runtime_url(url: str) -> bool:
@@ -77,6 +82,41 @@ def build_agent_runtime_passthrough_url(location: str, runtime_resource: str) ->
         f"https://{location}-aiplatform.googleapis.com/reasoningEngines/v1/"
         f"{runtime_resource}/api"
     )
+
+
+class AgentEndpoints(NamedTuple):
+    """HTTP and WebSocket base URLs for one remote agent."""
+
+    http_base: str
+    ws_base: str
+
+
+def http_to_ws_url(base_url: str) -> str:
+    """Normalize a URL's scheme to ws/wss"""
+    parts = urlsplit(base_url)
+    scheme = {"http": "ws", "https": "wss"}.get(parts.scheme, parts.scheme)
+    return urlunsplit(parts._replace(scheme=scheme))
+
+
+def build_agent_runtime_endpoints(location: str, runtime_resource: str) -> AgentEndpoints:
+    """Build Agent Runtime ingress base URLs for a deployed engine."""
+    host = f"{location}-{_AGENT_ENGINE_URL_FRAGMENT}"
+    resource = runtime_resource.strip("/")
+    return AgentEndpoints(
+        http_base=build_agent_runtime_passthrough_url(location, resource),
+        ws_base=f"wss://{host}/{_AGENT_RUNTIME_WS_INGRESS}/{resource}/api",
+    )
+
+
+def resolve_agent_endpoints(url: str) -> AgentEndpoints:
+    """Resolve the HTTP and WebSocket base URLs for a remote agent."""
+    http_url = url.rstrip("/")
+    if not is_agent_runtime_url(http_url):
+        return AgentEndpoints(http_base=http_url, ws_base=http_to_ws_url(http_url))
+
+    validate_agent_runtime_url(http_url)
+    location, resource = parse_agent_runtime_service_url(http_url)
+    return build_agent_runtime_endpoints(location, resource.removesuffix("/api"))
 
 
 def parse_agent_runtime_service_url(service_url: str) -> tuple[str, str]:

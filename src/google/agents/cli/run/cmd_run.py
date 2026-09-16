@@ -73,6 +73,15 @@ class _DispatchTarget(NamedTuple):
     # True only when this invocation started the local server; False when a
     # running server was reused or for remote (--url) runs.
     started_server: bool = False
+    server_pid: int | None = None
+
+
+class _SseEventResult(NamedTuple):
+    """Outcome of rendering one SSE/NDJSON event."""
+
+    last_author: str | None
+    # True when the event rendered content or surfaced an error.
+    rendered: bool
 
 
 def _resolve_dispatch_target(
@@ -82,6 +91,7 @@ def _resolve_dispatch_target(
     custom_headers: tuple[str, ...],
     *,
     trace_to_cloud: bool = False,
+    start_server: bool = False,
 ) -> _DispatchTarget:
     """Resolve where and how to dispatch a query.
 
@@ -121,6 +131,8 @@ def _resolve_dispatch_target(
         language=cfg.language,
         trace_to_cloud=trace_to_cloud,
     )
+    if server.started:
+        _print_local_server_banner(server.port, server.pid, keep_running=start_server)
     base_path = api_base_path(cfg.language)
     return _DispatchTarget(
         service_url=f"http://127.0.0.1:{server.port}{base_path}",
@@ -128,7 +140,26 @@ def _resolve_dispatch_target(
         mode="adk",
         app_name=app_name or cfg.agent_directory,
         started_server=server.started,
+        server_pid=server.pid,
     )
+
+
+def _print_local_server_banner(port: int, pid: int | None, *, keep_running: bool) -> None:
+    """Prints a banner for a freshly started local server and how it will end.
+
+    A persistent server (``--start-server``) outlives the run, so it advertises
+    how to stop it; a one-off server tears itself down when the run finishes, so
+    it says so instead of a stop hint that would mislead.
+    """
+    if keep_running:
+        click.secho(f"Local server started on port {port} (PID {pid})", dim=True)
+        click.secho("  Stop with: agents-cli run --stop-server", dim=True)
+    else:
+        click.secho(
+            f"Starting a temporary local server on port {port} "
+            "(stops automatically when done).",
+            dim=True,
+        )
 
 
 def _handle_stop_server(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
@@ -306,13 +337,27 @@ def cmd_run(
         app_name=app_name,
         custom_headers=custom_headers,
         trace_to_cloud=export_otel,
+        start_server=start_server,
     )
     if url:
         click.echo(f"Querying remote agent: {url} (mode: {target.mode})")
 
+    # A remote session lives on the deployed agent, so its resume command must
+    # repeat the routing/auth flags used here
+    # Local runs reuse the running server and need nothing extra.
+    resume_flags = _build_resume_flags(url, target.mode, app_name, custom_headers)
+
     # Only tear down a server this invocation started; a reused persistent
     # server (e.g. from --start-server) is left running.
     should_stop_server = not url and not start_server and target.started_server
+
+    # A session can only be resumed if it outlives this run. A remote session
+    # lives on the deployed agent; a local one lives in the local server's
+    # memory and survives only when that server persists (--start-server, or a
+    # reused already-running server). A one-off local server is torn down here,
+    # so its session is gone — advertise --start-server instead of a resume
+    # command that would 404.
+    keep_server = bool(url) or not should_stop_server
     try:
         _dispatch_query(
             service_url=target.service_url,
@@ -323,6 +368,8 @@ def cmd_run(
             app_name=target.app_name,
             session_id=session_id,
             verbose=verbose,
+            resume_flags=resume_flags,
+            keep_server=keep_server,
         )
     except (
         requests.ConnectionError,
@@ -342,7 +389,7 @@ def cmd_run(
     finally:
         if should_stop_server:
             # cwd is the project root here (set by _resolve_dispatch_target).
-            stop_server(Path.cwd())
+            stop_server(Path.cwd(), pid=target.server_pid)
 
 
 def _dispatch_query(
@@ -355,6 +402,8 @@ def _dispatch_query(
     app_name: str,
     session_id: str | None = None,
     verbose: bool = False,
+    resume_flags: str = "",
+    keep_server: bool = True,
 ) -> None:
     """Route a query to the right protocol handler.
 
@@ -392,6 +441,8 @@ def _dispatch_query(
             headers=headers,
             session_id=session_id,
             verbose=verbose,
+            resume_flags=resume_flags,
+            keep_server=keep_server,
         )
     elif mode == "adk":
         if is_legacy_agent_runtime_url(service_url):
@@ -401,6 +452,8 @@ def _dispatch_query(
                 headers=headers,
                 session_id=session_id,
                 verbose=verbose,
+                resume_flags=resume_flags,
+                keep_server=keep_server,
             )
         else:
             _query_adk_sse(
@@ -410,19 +463,47 @@ def _dispatch_query(
                 app_name=app_name,
                 session_id=session_id,
                 verbose=verbose,
+                resume_flags=resume_flags,
+                keep_server=keep_server,
             )
 
 
-def _print_session_id(session_id: str | None) -> None:
-    """Print session ID footer with a copy-pasteable resume command."""
+def _build_resume_flags(
+    url: str | None,
+    mode: str,
+    app_name: str | None,
+    custom_headers: tuple[str, ...],
+) -> str:
+    """Return the flags a resumed remote run needs, with a leading space."""
+    if not url:
+        return ""
+    flags = [f'--url "{url}"', f"--mode {mode}"]
+    if app_name:
+        flags.append(f'--app-name "{app_name}"')
+    flags.extend(f'--header "{header}"' for header in custom_headers)
+    return " " + " ".join(flags)
+
+
+def _print_session_id(
+    session_id: str | None, resume_flags: str = "", *, keep_server: bool = True
+) -> None:
+    """Print the session ID footer."""
     if not session_id:
         return
     click.echo()
     click.secho(f"Session: {session_id}", dim=True)
-    click.secho(
-        f'  Resume with: agents-cli run "<message>" --session-id {session_id}',
-        dim=True,
-    )
+    if keep_server:
+        click.secho(
+            f'  Resume with: agents-cli run "<message>"{resume_flags}'
+            f" --session-id {session_id}",
+            dim=True,
+        )
+    else:
+        click.secho(
+            "  One-off session — add --start-server to keep the local server "
+            "(and its sessions) alive so you can resume with --session-id.",
+            dim=True,
+        )
 
 
 def _print_artifacts(paths: list[str]) -> None:
@@ -484,20 +565,38 @@ def _print_sse_event(
     last_author: str | None,
     verbose: bool,
     artifacts: list[str],
-) -> str | None:
-    """Process and print a single SSE/NDJSON event. Returns updated last_author.
-    Appends paths of any saved binary artifacts to ``artifacts``.
+) -> _SseEventResult:
+    """Process and print a single SSE/NDJSON event.
+
+    Returns an :class:`_SseEventResult` carrying the updated ``last_author`` and
+    whether the event ``rendered`` anything — so the caller can tell a genuinely
+    empty turn from one that just streamed nothing renderable. Appends paths of
+    any saved binary artifacts to ``artifacts``.
     """
-    author = event.get("author")
-    last_author = _print_author_tag(author, last_author)
+    rendered = False
     content = event.get("content")
-    if isinstance(content, dict):
-        for part in content.get("parts", []):
-            _print_sse_part(part, artifacts)
+    parts = content.get("parts", []) if isinstance(content, dict) else []
+
+    if parts:
+        last_author = _print_author_tag(event.get("author"), last_author)
+        for part in parts:
+            if _print_sse_part(part, artifacts):
+                rendered = True
+
+    # ADK reports a failed turn via errorCode/errorMessage (camelCase over HTTP,
+    # snake_case elsewhere) rather than content — surface it instead of dropping
+    # it, which used to make an errored run look silently empty. See b/557288939.
+    error_message = event.get("errorMessage") or event.get("error_message")
+    error_code = event.get("errorCode") or event.get("error_code")
+    if error_message or error_code:
+        code = f" [{error_code}]" if error_code else ""
+        click.secho(f"\n[error{code}]: {error_message or 'unknown error'}", fg="red")
+        rendered = True
+
     if verbose:
         click.echo()
         click.secho(json.dumps(event, indent=2), dim=True)
-    return last_author
+    return _SseEventResult(last_author, rendered)
 
 
 def _query_adk_sse(
@@ -508,6 +607,8 @@ def _query_adk_sse(
     app_name: str,
     session_id: str | None = None,
     verbose: bool = False,
+    resume_flags: str = "",
+    keep_server: bool = True,
 ) -> None:
     """Create a session and stream an SSE response from an ADK FastAPI agent.
 
@@ -538,6 +639,7 @@ def _query_adk_sse(
 
     last_author = None
     artifacts: list[str] = []
+    rendered_any = False
     user_message = {"role": "user", "parts": parts}
     try:
         for event in run_sse(
@@ -548,18 +650,41 @@ def _query_adk_sse(
             headers=headers,
             user_id="cli-user",
         ):
-            last_author = _print_sse_event(event, last_author, verbose, artifacts)
+            last_author, rendered = _print_sse_event(
+                event, last_author, verbose, artifacts
+            )
+            rendered_any = rendered_any or rendered
     except requests.HTTPError as exc:
         response = exc.response
         status = response.status_code if response is not None else "unknown"
         body = response.text if response is not None else str(exc)
+        # A local resume against a session the server never heard of returns 404
+        # (in-memory local sessions don't survive a one-off run or an idle-out).
+        # Explain that instead of surfacing a bare "HTTP 404".
+        if (
+            status == 404
+            and session_id
+            and (
+                service_url.startswith("http://127.0.0.1")
+                or service_url.startswith("http://localhost")
+            )
+        ):
+            raise click.ClickException(
+                f"Session {session_id} was not found on the local server.\n"
+                "  In-memory local sessions don't survive a one-off run (or "
+                "after the server idles out).\n"
+                "  Start a fresh run without --session-id, or use "
+                "--start-server to keep sessions alive across runs."
+            ) from exc
         raise click.ClickException(
             f"Failed to run agent (HTTP {status}):\n  {body}"
         ) from exc
 
     click.echo()
+    if not rendered_any:
+        click.secho("(no response content)", fg="yellow")
     _print_artifacts(artifacts)
-    _print_session_id(session_id)
+    _print_session_id(session_id, resume_flags, keep_server=keep_server)
 
 
 def _create_agent_runtime_session(
@@ -589,8 +714,11 @@ def _query_legacy_agent_runtime_sse(
     service_url: str,
     message: str | dict,
     headers: dict,
+    *,
     session_id: str | None = None,
     verbose: bool = False,
+    resume_flags: str = "",
+    keep_server: bool = True,
 ) -> None:
     """Stream a query to an Agent Runtime via the ``:streamQuery`` HTTP endpoint.
 
@@ -641,6 +769,7 @@ def _query_legacy_agent_runtime_sse(
             )
         last_author = None
         artifacts: list[str] = []
+        rendered_any = False
         for line in resp.iter_lines(decode_unicode=True):
             if not line:
                 continue
@@ -648,11 +777,16 @@ def _query_legacy_agent_runtime_sse(
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            last_author = _print_sse_event(event, last_author, verbose, artifacts)
+            last_author, rendered = _print_sse_event(
+                event, last_author, verbose, artifacts
+            )
+            rendered_any = rendered_any or rendered
 
     click.echo()
+    if not rendered_any:
+        click.secho("(no response content)", fg="yellow")
     _print_artifacts(artifacts)
-    _print_session_id(session_id)
+    _print_session_id(session_id, resume_flags, keep_server=keep_server)
 
 
 def _query_a2a(
@@ -662,6 +796,8 @@ def _query_a2a(
     headers: dict,
     session_id: str | None = None,
     verbose: bool = False,
+    resume_flags: str = "",
+    keep_server: bool = True,
 ) -> None:
     """Probe candidate A2A base URLs for an agent card, then query the agent.
 
@@ -676,7 +812,13 @@ def _query_a2a(
         if resp.status_code == 200:
             asyncio.run(
                 _query_a2a_async(
-                    base, parts, headers, session_id=session_id, verbose=verbose
+                    base,
+                    parts,
+                    headers,
+                    session_id=session_id,
+                    verbose=verbose,
+                    resume_flags=resume_flags,
+                    keep_server=keep_server,
                 )
             )
             return
@@ -686,8 +828,11 @@ def _query_a2a(
         f"  HTTP {status} from {url}:\n    {text}" for url, status, text in failures
     )
     hint = ""
+
+    if a2a_bases and a2a_bases[-1].rstrip("/").endswith("/a2a"):
+        hint += "\n  Pass the base service URL without the '/a2a' suffix."
     if any(status in (404, 405) for _, status, _ in failures):
-        hint = "\n  If this is an ADK agent, try --mode adk instead."
+        hint += "\n  If this is an ADK agent, try --mode adk instead."
     raise click.ClickException(f"Failed to fetch agent card:\n{detail}{hint}")
 
 
@@ -695,8 +840,11 @@ async def _query_a2a_async(
     base_url: str,
     parts: list[Part],
     headers: dict,
+    *,
     session_id: str | None = None,
     verbose: bool = False,
+    resume_flags: str = "",
+    keep_server: bool = True,
 ) -> None:
     """Async implementation — sends a message and prints the response (a2a-sdk 1.0).
 
@@ -744,32 +892,49 @@ async def _query_a2a_async(
         last_author = None
         response_session_id = None
         artifacts: list[str] = []
+        rendered_any = False
+
+        def _render_a2a_parts(render_parts: list[Part]) -> None:
+            """Print the agent tag only for parts that actually render, so an
+            empty/marker-only chunk doesn't emit a bare "[agent]:" line.
+            """
+            nonlocal last_author, rendered_any
+            for part in render_parts:
+                if not _a2a_part_has_content(part):
+                    continue
+                last_author = _print_author_tag(agent_name, last_author)
+                _print_a2a_part(part, artifacts)
+                rendered_any = True
+
         async for chunk in a2a_client.send_message(SendMessageRequest(message=msg)):
             if chunk.HasField("artifact_update"):
                 if not response_session_id and chunk.artifact_update.context_id:
                     response_session_id = chunk.artifact_update.context_id
-                for part in chunk.artifact_update.artifact.parts:
-                    last_author = _print_author_tag(agent_name, last_author)
-                    _print_a2a_part(part, artifacts)
+                _render_a2a_parts(list(chunk.artifact_update.artifact.parts))
             elif chunk.HasField("task"):
                 if not response_session_id and chunk.task.context_id:
                     response_session_id = chunk.task.context_id
                 for artifact in chunk.task.artifacts:
-                    for part in artifact.parts:
-                        last_author = _print_author_tag(agent_name, last_author)
-                        _print_a2a_part(part, artifacts)
+                    _render_a2a_parts(list(artifact.parts))
             elif chunk.HasField("message"):
-                for part in chunk.message.parts:
-                    last_author = _print_author_tag(agent_name, last_author)
-                    _print_a2a_part(part, artifacts)
+                _render_a2a_parts(list(chunk.message.parts))
 
             if verbose:
                 click.echo()
                 click.secho(str(chunk), dim=True)
 
     click.echo()
+    # Never let a run look like it silently succeeded: if nothing was rendered, say
+    # so.
+    if not rendered_any:
+        click.secho("(no response content)", fg="yellow")
     _print_artifacts(artifacts)
-    _print_session_id(response_session_id)
+    _print_session_id(response_session_id, resume_flags, keep_server=keep_server)
+
+
+def _a2a_part_has_content(part: Part) -> bool:
+    """True if an A2A part carries something renderable (text, file, data)."""
+    return bool(part.text or part.url or part.raw or part.HasField("data"))
 
 
 def _print_a2a_part(part: Part, artifacts: list[str]) -> None:
@@ -784,33 +949,39 @@ def _print_a2a_part(part: Part, artifacts: list[str]) -> None:
         click.echo(f"\n{json.dumps(MessageToDict(part.data), indent=2)}", nl=False)
 
 
-def _print_sse_part(part: dict, artifacts: list[str]) -> None:
-    """Print an ADK SSE response part to the terminal."""
+def _print_sse_part(part: dict, artifacts: list[str]) -> bool:
+    """Print an ADK SSE response part. Appends saved artifact paths to
+    ``artifacts``. Returns True if it rendered something."""
     text = part.get("text")
     if text:
         click.echo(text, nl=False)
-        return
+        return True
     inline_data = part.get("inlineData")
     if inline_data:
         path = _save_inline_artifact(inline_data["data"], inline_data.get("mimeType"))
         if path is not None:
             artifacts.append(path)
-        return
+        # A failed decode still printed a warning, so the turn isn't silently
+        # empty — report it as rendered to avoid a redundant "(no response
+        # content)" note.
+        return True
     file_data = part.get("fileData")
     if file_data:
         uri = file_data.get("fileUri")
         if uri:
             click.echo(f"\n[file: {uri}]", nl=False)
-        return
+            return True
+        return False
     function_call = part.get("functionCall")
     if function_call:
         name = function_call.get("name", "")
         args = function_call.get("args", {})
         click.echo(f"\n[tool_call: {name}({json.dumps(args)})]", nl=False)
-        return
+        return True
     function_response = part.get("functionResponse")
     if function_response:
         name = function_response.get("name", "")
         response = function_response.get("response", {})
         click.echo(f"\n[tool_response: {name} -> {json.dumps(response)}]", nl=False)
-        return
+        return True
+    return False

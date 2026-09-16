@@ -18,19 +18,16 @@ import (
 	"context"
 	"log"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	app "{{cookiecutter.project_name}}/{{cookiecutter.agent_directory}}"
 	"{{cookiecutter.project_name}}/appinfo"
+	"{{cookiecutter.project_name}}/sessions"
 
-	cloudtrace "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace"
 	"github.com/joho/godotenv"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/sdk/resource"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 
-	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/cmd/launcher"
 	"google.golang.org/adk/v2/cmd/launcher/console"
 	"google.golang.org/adk/v2/cmd/launcher/universal"
@@ -43,48 +40,44 @@ import (
 	"google.golang.org/adk/v2/cmd/launcher/web/triggers/eventarc"
 	"google.golang.org/adk/v2/cmd/launcher/web/triggers/pubsub"
 	"google.golang.org/adk/v2/cmd/launcher/web/webui"
-	"google.golang.org/adk/v2/session"
 )
 
 func main() {
+	// preStop lifecycle support: `/agent sleep <seconds>` sleeps, then exits 0.
+	//
+	// On GKE the container needs a preStop hook that delays SIGTERM for a few
+	// seconds, so a pod that has entered Terminating keeps serving until its
+	// EndpointSlice removal has propagated to every kube-proxy — otherwise new
+	// requests are still routed to it and dropped (the Python template does this
+	// with `sleep 10`). We can't reuse that here: this app ships in a distroless
+	// image with no `sleep` and no shell, and the typed Terraform kubernetes
+	// provider can't express the native `preStop.sleep` action — so the hook must
+	// exec a binary that already exists in the image. The only such binary is the
+	// app itself, hence this subcommand. Handled before any other setup so it
+	// stays a cheap, dependency-free no-op (see deployment/terraform/.../service.tf).
+	if len(os.Args) >= 2 && os.Args[1] == "sleep" {
+		sleepAndExit(os.Args[2:])
+		return
+	}
+
 	// Load .env file if present (local development only, ignored in production)
 	_ = godotenv.Load(".env")
 
 	ctx := context.Background()
 
-	// Set up telemetry exporter with service resource
-	res, _ := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName("{{cookiecutter.project_name}}"),
-		),
-	)
-
-	// Set up Cloud Trace - try ADC first, then env var
-	var tp *sdktrace.TracerProvider
-	exporter, err := cloudtrace.New()
-	if err != nil {
-		if projectID := os.Getenv("GOOGLE_CLOUD_PROJECT"); projectID != "" {
-			exporter, err = cloudtrace.New(cloudtrace.WithProjectID(projectID))
-		}
-	}
-	if err != nil {
-		log.Printf("Warning: Cloud Trace disabled: %v", err)
+	// Export traces and logs to Google Cloud over OTLP. Best-effort:
+	// the agent still runs if telemetry cannot be configured (e.g. no ADC locally).
+	if shutdown, err := setupObservability(ctx, "{{cookiecutter.project_name}}"); err != nil {
+		log.Printf("Warning: telemetry disabled: %v", err)
 	} else {
-		tp = sdktrace.NewTracerProvider(
-			sdktrace.WithBatcher(exporter),
-			sdktrace.WithResource(res),
-		)
-		log.Println("Telemetry: Cloud Trace enabled")
-	}
-	if tp != nil {
-		otel.SetTracerProvider(tp)
-		// Set up W3C trace context propagation for linked spans
-		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-			propagation.TraceContext{},
-			propagation.Baggage{},
-		))
+		log.Println("Telemetry: OTLP export to telemetry.googleapis.com enabled")
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := shutdown(shutdownCtx); err != nil {
+				log.Printf("Warning: telemetry shutdown: %v", err)
+			}
+		}()
 	}
 
 	rootAgent, err := app.NewRootAgent(ctx)
@@ -92,21 +85,42 @@ func main() {
 		log.Fatalf("Failed to create agent: %v", err)
 	}
 
+	// Select the session backend (in-memory, Vertex AI, or Cloud SQL) from the environment.
+	sessionService, err := sessions.NewService(ctx)
+	if err != nil {
+		log.Fatalf("Failed to create session service: %v", err)
+	}
+
 	config := &launcher.Config{
-		AgentLoader:    adkagent.NewSingleLoader(rootAgent),
-		SessionService: session.InMemoryService(),
+		AgentLoader:    &appLoader{root: rootAgent},
+		SessionService: sessionService,
 	}
 
 	appURL := resolveAppURL()
 
 	args := os.Args[1:]
+
+	// hasFlag reports whether the caller already passed -name / --name (in either
+	// the "-name value" or "-name=value" form). When it did, we respect that
+	// value instead of appending our own — appending a duplicate would leave the
+	// effective value up to flag-parsing order (last wins).
+	hasFlag := func(name string) bool {
+		for _, a := range args {
+			if a == "-"+name || a == "--"+name ||
+				strings.HasPrefix(a, "-"+name+"=") || strings.HasPrefix(a, "--"+name+"=") {
+				return true
+			}
+		}
+		return false
+	}
+
 	var newArgs []string
 	for _, arg := range args {
 		newArgs = append(newArgs, arg)
-		if arg == "a2a" {
+		if arg == "a2a" && !hasFlag("a2a_agent_url") {
 			newArgs = append(newArgs, "-a2a_agent_url", appURL)
 		}
-		if arg == "webui" {
+		if arg == "webui" && !hasFlag("api_server_address") {
 			newArgs = append(newArgs, "-api_server_address", appURL)
 		}
 	}
@@ -115,7 +129,7 @@ func main() {
 	// Assemble the launcher by hand (instead of full.NewLauncher) to include additional sublaunchers:
 	// appinfo - for agent metadata used by evals
 {%- if cookiecutter.deployment_target == 'agent_runtime' %}
-  // agentengine - for compatibility with Vertex Playground
+	// agentengine - for compatibility with Vertex Playground
 {%- endif %}
 	l := universal.NewLauncher(
 		console.NewLauncher(),
@@ -125,7 +139,9 @@ func main() {
 			pubsub.NewLauncher(),
 			eventarc.NewLauncher(),
 {%- if cookiecutter.deployment_target == 'agent_runtime' %}
-			agentengine.NewLauncher(rootAgent.Name()),
+			// The Agent Engine id is the AppName its session handlers use, so it
+			// tracks the served app name rather than the agent's name.
+			agentengine.NewLauncher(appName),
 {%- endif %}
 			appinfo.NewLauncher(),
 			api.NewLauncher(),
@@ -134,4 +150,19 @@ func main() {
 	if err = l.Execute(ctx, config, args); err != nil {
 		log.Fatalf("Run failed: %v\n\n%s", err, l.CommandLineSyntax())
 	}
+}
+
+// sleepAndExit implements the `sleep` subcommand used by the Kubernetes preStop
+// hook. It accepts a plain number of seconds ("10") or a Go duration ("10s"),
+// defaulting to 10s when the argument is missing or unparseable.
+func sleepAndExit(args []string) {
+	d := 10 * time.Second
+	if len(args) >= 1 {
+		if secs, err := strconv.Atoi(args[0]); err == nil {
+			d = time.Duration(secs) * time.Second
+		} else if parsed, err := time.ParseDuration(args[0]); err == nil {
+			d = parsed
+		}
+	}
+	time.Sleep(d)
 }

@@ -19,9 +19,12 @@ locals {
 }
 
 
-# Get the project number
+# Get the project number. depends_on defers the read to apply time, after
+# bootstrap has enabled Cloud Resource Manager.
 data "google_project" "project" {
   project_id = var.project_id
+
+  depends_on = [google_project_service.bootstrap]
 }
 
 # Grant Storage Object Creator role to default compute service account

@@ -1,3 +1,5 @@
+//go:build e2e
+
 // Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -349,10 +351,22 @@ func TestAppInfo(t *testing.T) {
 		t.Errorf("language = %v, want %q", got["language"], "go")
 	}
 
+	if got["name"] != appName {
+		t.Errorf("name = %v, want %q", got["name"], appName)
+	}
+
+	// The agent map is keyed by agent name, which is not the app name: the app
+	// is served under the agent directory while the agent carries the project's
+	// name, so app-info reports both.
+	rootAgentName, _ := got["rootAgentName"].(string)
+	if rootAgentName == "" {
+		t.Fatalf("app-info reports no rootAgentName: %v", got)
+	}
+
 	agents, _ := got["agents"].(map[string]any)
-	agent, ok := agents[appName].(map[string]any)
+	agent, ok := agents[rootAgentName].(map[string]any)
 	if !ok {
-		t.Fatalf("agent %q missing from app-info: %v", appName, got["agents"])
+		t.Fatalf("agent %q missing from app-info: %v", rootAgentName, got["agents"])
 	}
 
 	if s, _ := agent["description"].(string); s == "" {

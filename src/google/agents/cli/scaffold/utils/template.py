@@ -29,8 +29,9 @@ import yaml
 from cookiecutter.main import cookiecutter
 from rich.prompt import Confirm, IntPrompt
 
+from google.agents.cli._defaults import DEFAULT_MODEL
 from google.agents.cli._output import Console
-from google.agents.cli._project import root_agent_name
+from google.agents.cli._project import root_agent_name as derive_root_agent_name
 
 from .lock_utils import get_lock_filename, is_empty_agent
 from .remote_template import (
@@ -156,8 +157,9 @@ def apply_conditional_files(
             unused_path = parent / f"unused_{name}"
 
             logging.debug(
-                f"Conditional file '{rel_path}' condition False, "
-                f"renaming to {unused_path.name}"
+                "Conditional file '%s' condition False, renaming to %s",
+                rel_path,
+                unused_path.name,
             )
 
             if unused_path.exists():
@@ -168,7 +170,7 @@ def apply_conditional_files(
 
             file_path.rename(unused_path)
         else:
-            logging.debug(f"Conditional file '{rel_path}' condition True, keeping")
+            logging.debug("Conditional file '%s' condition True, keeping", rel_path)
 
 
 def _add_dependencies(
@@ -535,6 +537,29 @@ def get_available_agents(
     return agents
 
 
+def get_available_base_templates() -> list[str]:
+    """Get list of available base templates for inheritance.
+
+    Returns:
+        List of base template names.
+    """
+    agents = get_available_agents()
+    return sorted([agent_info["name"] for agent_info in agents.values()])
+
+
+def validate_base_template(base_template: str) -> bool:
+    """Validate that a base template exists.
+
+    Args:
+        base_template: Name of the base template to validate
+
+    Returns:
+        True if the base template exists, False otherwise
+    """
+    available_templates = get_available_base_templates()
+    return resolve_agent_alias(base_template) in available_templates
+
+
 def load_template_config(template_dir: pathlib.Path) -> dict[str, Any]:
     """Read .templateconfig.yaml file to get agent configuration."""
     config_file = template_dir / TEMPLATE_CONFIG_FILE
@@ -720,15 +745,14 @@ def prompt_cicd_runner_selection(default_value: str | None = None) -> str:
     return keys[choice - 1]
 
 
-def get_template_path(agent_name: str, debug: bool = False) -> pathlib.Path:
+def get_template_path(agent_name: str) -> pathlib.Path:
     """Get the absolute path to the agent template directory."""
     current_dir = pathlib.Path(__file__).parent.parent
     template_path = current_dir / "agents" / agent_name / ".template"
-    if debug:
-        logging.debug(f"Looking for template in: {template_path}")
-        logging.debug(f"Template exists: {template_path.exists()}")
-        if template_path.exists():
-            logging.debug(f"Template contents: {list(template_path.iterdir())}")
+    logging.debug("Looking for template in: %s", template_path)
+    logging.debug("Template exists: %s", template_path.exists())
+    if template_path.exists():
+        logging.debug("Template contents: %s", list(template_path.iterdir()))
 
     if not template_path.exists():
         raise ValueError(f"Template directory not found at {template_path}")
@@ -771,7 +795,7 @@ def _extract_agent_garden_labels(
         agent_sample_id = pathlib.Path(remote_spec.template_path).name
         # For ADK samples, publisher is always "google"
         agent_sample_publisher = "google"
-        logging.debug(f"Detected ADK sample from remote_spec: {agent_sample_id}")
+        logging.debug("Detected ADK sample from remote_spec: %s", agent_sample_id)
         return agent_sample_id, agent_sample_publisher
 
     # Fallback: Detect ADK samples from pyproject.toml (for version-locked templates)
@@ -791,10 +815,10 @@ def _extract_agent_garden_labels(
                     agent_sample_id = project_name_from_toml
                     agent_sample_publisher = "google"  # ADK samples are from Google
                     logging.debug(
-                        f"Detected ADK sample from pyproject.toml: {agent_sample_id}"
+                        "Detected ADK sample from pyproject.toml: %s", agent_sample_id
                     )
             except Exception as e:
-                logging.debug(f"Failed to read pyproject.toml: {e}")
+                logging.debug("Failed to read pyproject.toml: %s", e)
 
     return agent_sample_id, agent_sample_publisher
 
@@ -876,7 +900,7 @@ def _generate_yaml_agent_shim(
             content = agent_py_path.read_text(encoding="utf-8")
             if re.search(r"^\s*root_agent\s*=", content, re.MULTILINE):
                 logging.debug(
-                    f"{agent_directory}/agent.py already has root_agent defined"
+                    "%s/agent.py already has root_agent defined", agent_directory
                 )
                 return
         except Exception as e:
@@ -905,7 +929,7 @@ app = App(root_agent=root_agent, name="{agent_directory}")
 
     try:
         agent_py_path.write_text(shim_content, encoding="utf-8")
-        logging.debug(f"Generated YAML agent shim at {agent_py_path}")
+        logging.debug("Generated YAML agent shim at %s", agent_py_path)
     except Exception as e:
         logging.warning(
             f"Could not generate YAML agent shim at {agent_py_path}: {type(e).__name__}: {e}"
@@ -942,7 +966,7 @@ def apply_prototype_deployment_cleanup(
     )
     if not keep:
         shutil.rmtree(deployment_dir)
-        logging.debug(f"Prototype mode: deleted {deployment_dir}")
+        logging.debug("Prototype mode: deleted %s", deployment_dir)
         return
 
     # Keep single-project/ + shared/ (observability: telemetry.tf, BigQuery schemas); drop cicd/
@@ -964,7 +988,8 @@ def apply_prototype_deployment_cleanup(
             else:
                 item.unlink()
     logging.debug(
-        f"Prototype mode: preserved deployment/terraform/single-project/ and shared/, removed cicd/ in {deployment_dir}"
+        "Prototype mode: preserved deployment/terraform/single-project/ and shared/, removed cicd/ in %s",
+        deployment_dir,
     )
 
 
@@ -989,6 +1014,7 @@ def process_template(
     bq_analytics: bool = False,
     agent_gateway: bool = False,
     agent_guidance_filename: str = "GEMINI.md",
+    root_agent_name: str = "",
 ) -> None:
     """Process the template directory and create a new project.
 
@@ -1013,9 +1039,9 @@ def process_template(
         bq_analytics: Whether to include BigQuery Agent Analytics Plugin
         agent_gateway: Whether the Dockerfile should trust the Agent Gateway root CA
     """
-    logging.debug(f"Processing template from {template_dir}")
-    logging.debug(f"Project name: {project_name}")
-    logging.debug(f"Output directory: {output_dir}")
+    logging.debug("Processing template from %s", template_dir)
+    logging.debug("Project name: %s", project_name)
+    logging.debug("Output directory: %s", output_dir)
 
     # Create console for user feedback
     console = Console()
@@ -1046,7 +1072,8 @@ def process_template(
                 # Derive from remote template folder name
                 folder_name = remote_template_path.name.replace("-", "_")
                 logging.debug(
-                    f"Flat structure (-dir .): deriving target '{folder_name}' from folder name"
+                    "Flat structure (-dir .): deriving target '%s' from folder name",
+                    folder_name,
                 )
                 agent_dir = folder_name
             else:
@@ -1066,12 +1093,12 @@ def process_template(
         # For remote templates, determine the base template
         base_template_name = get_base_template_name(remote_config or {})
         agent_path = pathlib.Path(__file__).parent.parent / "agents" / base_template_name
-        logging.debug(f"Remote template using base: {base_template_name}")
+        logging.debug("Remote template using base: %s", base_template_name)
     elif cli_overrides and cli_overrides.get("base_template"):
         # For in-folder mode with base_template override, use the agent template
         base_template_name = cli_overrides["base_template"]
         agent_path = pathlib.Path(__file__).parent.parent / "agents" / base_template_name
-        logging.debug(f"Using base template override: {base_template_name}")
+        logging.debug("Using base template override: %s", base_template_name)
     else:
         # For local templates, use the existing logic
         base_template_name = (
@@ -1079,7 +1106,7 @@ def process_template(
         )
         agent_path = template_dir.parent  # Get parent of template dir
 
-    logging.debug(f"agent path: {agent_path}")
+    logging.debug("agent path: %s", agent_path)
     if not agent_path.exists():
         # Fail here rather than carry on: every later use of agent_path is guarded
         # by exists(), so an unresolvable base silently copies no agent layer and
@@ -1089,7 +1116,7 @@ def process_template(
             "A template declares its base in .template/templateconfig.yaml; "
             f"'{base_template_name}' is not one this CLI version provides."
         )
-    logging.debug(f"agent path contents: {list(agent_path.iterdir())}")
+    logging.debug("agent path contents: %s", list(agent_path.iterdir()))
 
     # Resolve template config once.
     if remote_config:
@@ -1146,7 +1173,7 @@ def process_template(
                     agent_name,
                     overwrite=True,
                 )
-                logging.debug(f"1a. Copied shared base template from {shared_base_path}")
+                logging.debug("1a. Copied shared base template from %s", shared_base_path)
 
             # 1b. Copy language-specific base template files
             language_base_path = base_templates_path / language
@@ -1158,7 +1185,7 @@ def process_template(
                     overwrite=True,
                 )
                 logging.debug(
-                    f"1b. Copied {language} base template from {language_base_path}"
+                    "1b. Copied %s base template from %s", language, language_base_path
                 )
             else:
                 raise FileNotFoundError(
@@ -1183,7 +1210,8 @@ def process_template(
                         overwrite=True,
                     )
                     logging.debug(
-                        f"2a. Copied shared deployment files from {shared_deployment_path}"
+                        "2a. Copied shared deployment files from %s",
+                        shared_deployment_path,
                     )
 
                 # 2b. Copy language-specific deployment target files
@@ -1198,7 +1226,9 @@ def process_template(
                         overwrite=True,
                     )
                     logging.debug(
-                        f"2b. Copied {language} deployment files from {language_deployment_path}"
+                        "2b. Copied %s deployment files from %s",
+                        language,
+                        language_deployment_path,
                     )
 
             # 4. Skip remote template files during cookiecutter processing
@@ -1225,7 +1255,7 @@ def process_template(
                 "frontend_type", DEFAULT_FRONTEND
             )
             copy_frontend_files(frontend_type, project_template)
-            logging.debug(f"5. Processed frontend files for type: {frontend_type}")
+            logging.debug("5. Processed frontend files for type: %s", frontend_type)
 
             # 6. Copy agent-specific files to override base template (using final config)
             if agent_path.exists():
@@ -1246,12 +1276,16 @@ def process_template(
                 # Copy agent directory (always from "app" to target directory)
                 source_agent_folder = agent_path / template_agent_directory
                 logging.debug(
-                    f"6. Source agent folder: {source_agent_folder}, exists: {source_agent_folder.exists()}"
+                    "6. Source agent folder: %s, exists: %s",
+                    source_agent_folder,
+                    source_agent_folder.exists(),
                 )
                 target_agent_folder = project_template / agent_directory
                 if source_agent_folder.exists():
                     logging.debug(
-                        f"6. Copying agent folder {template_agent_directory} -> {agent_directory} with override"
+                        "6. Copying agent folder %s -> %s with override",
+                        template_agent_directory,
+                        agent_directory,
                     )
                     copy_files(
                         source_agent_folder,
@@ -1285,7 +1319,7 @@ def process_template(
                     agent_folder = agent_path / folder
                     project_folder = project_template / folder
                     if agent_folder.exists():
-                        logging.debug(f"6. Copying {folder} folder with override")
+                        logging.debug("6. Copying %s folder with override", folder)
                         copy_files(
                             agent_folder,
                             project_folder,
@@ -1309,7 +1343,7 @@ def process_template(
                 for item in agent_path.iterdir():
                     if item.name in already_copied:
                         continue
-                    logging.debug(f"6c. Overlaying agent-owned {item.name}")
+                    logging.debug("6c. Overlaying agent-owned %s", item.name)
                     copy_files(
                         item,
                         project_template / item.name,
@@ -1336,9 +1370,11 @@ def process_template(
                 "agent_name": agent_name,
                 # The name of the root agent could be different than the
                 # project name, because of character set restrictions.
-                "root_agent_name": root_agent_name(project_name),
+                "root_agent_name": root_agent_name
+                or derive_root_agent_name(project_name),
                 "package_version": current_version,
                 "generated_at": datetime.now(tz=UTC).isoformat(),
+                "default_model": DEFAULT_MODEL,
                 "agent_description": template_config.get("description", ""),
                 "example_question": template_config.get("example_question", "").ljust(61),
                 "settings": settings,
@@ -1377,6 +1413,7 @@ def process_template(
                     "*.ipynb",  # Don't render notebooks
                     "*.sum",  # Don't render Go sum files
                     "e2e/**/*",  # Don't render Go e2e test files (contain Go {{ }} syntax)
+                    "appinfo/*",  # Don't render Go app-info files (contain Go {{ }} syntax)
                     "frontend/**/*",  # Don't render frontend directory (covers all JS/TS/CSS/JSON files)
                     "sample_data/*",  # Don't render sample data files
                     ".git/*",  # Don't render git directory
@@ -1395,8 +1432,8 @@ def process_template(
             ) as json_file:
                 json.dump(cookiecutter_config, json_file, indent=4)
 
-            logging.debug(f"Template structure created at {cookiecutter_template}")
-            logging.debug(f"Directory contents: {list(cookiecutter_template.iterdir())}")
+            logging.debug("Template structure created at %s", cookiecutter_template)
+            logging.debug("Directory contents: %s", list(cookiecutter_template.iterdir()))
 
             # Process the template
             cookiecutter(
@@ -1414,7 +1451,9 @@ def process_template(
             if is_remote and remote_template_path:
                 generated_project_dir = temp_path / project_name
                 logging.debug(
-                    f"Copying remote template files from {remote_template_path} to {generated_project_dir}"
+                    "Copying remote template files from %s to %s",
+                    remote_template_path,
+                    generated_project_dir,
                 )
 
                 # Check if this is a flat structure template
@@ -1434,7 +1473,7 @@ def process_template(
                 if is_flat_structure:
                     # For flat structures, Python files go to agent_directory
                     logging.debug(
-                        f"Flat structure detected: copying files to {agent_directory}/"
+                        "Flat structure detected: copying files to %s/", agent_directory
                     )
                     copy_flat_structure_agent_files(
                         remote_template_path,
@@ -1477,7 +1516,9 @@ def process_template(
                 # For in-folder mode, copy files directly to the destination directory
                 final_destination = destination_dir
                 logging.debug(
-                    f"In-folder mode: copying files from {generated_project_dir} to {final_destination}"
+                    "In-folder mode: copying files from %s to %s",
+                    generated_project_dir,
+                    final_destination,
                 )
 
                 if generated_project_dir.exists():
@@ -1492,13 +1533,15 @@ def process_template(
                         else:
                             shutil.copy2(item, dest_item)
                     logging.debug(
-                        f"Project files successfully copied to {final_destination}"
+                        "Project files successfully copied to %s", final_destination
                     )
             else:
                 # Standard mode: create project subdirectory
                 final_destination = destination_dir / project_name
                 logging.debug(
-                    f"Standard mode: moving project from {generated_project_dir} to {final_destination}"
+                    "Standard mode: moving project from %s to %s",
+                    generated_project_dir,
+                    final_destination,
                 )
 
                 if generated_project_dir.exists():
@@ -1509,7 +1552,7 @@ def process_template(
                         generated_project_dir, final_destination, dirs_exist_ok=True
                     )
 
-                    logging.debug(f"Project successfully created at {final_destination}")
+                    logging.debug("Project successfully created at %s", final_destination)
 
             # Always check if the project was successfully created before proceeding
             if not final_destination.exists():
@@ -1573,10 +1616,10 @@ def process_template(
                     if unused_path.exists():
                         if unused_path.is_dir():
                             shutil.rmtree(unused_path)
-                            logging.debug(f"Deleted unused directory: {unused_path}")
+                            logging.debug("Deleted unused directory: %s", unused_path)
                         else:
                             unused_path.unlink()
-                            logging.debug(f"Deleted unused file: {unused_path}")
+                            logging.debug("Deleted unused file: %s", unused_path)
 
             # Clean up additional files for prototype/minimal mode (cicd_runner == "skip")
             if cicd_runner == "skip":
@@ -1589,7 +1632,7 @@ def process_template(
                 load_test_dir = final_destination / "tests" / "load_test"
                 if load_test_dir.exists():
                     shutil.rmtree(load_test_dir)
-                    logging.debug(f"Prototype mode: deleted {load_test_dir}")
+                    logging.debug("Prototype mode: deleted %s", load_test_dir)
 
             # Handle pyproject.toml and uv.lock files (Python only)
             if language == "python":
@@ -1620,14 +1663,16 @@ def process_template(
                         / "locks"
                         / get_lock_filename(agent_name, deployment_target)
                     )
-                    logging.debug(f"Looking for lock file at: {lock_path}")
-                    logging.debug(f"Lock file exists: {lock_path.exists()}")
+                    logging.debug("Looking for lock file at: %s", lock_path)
+                    logging.debug("Lock file exists: %s", lock_path.exists())
                     if not lock_path.exists():
                         raise FileNotFoundError(f"Lock file not found: {lock_path}")
                     # Copy and rename to uv.lock in the project directory
                     shutil.copy2(lock_path, final_destination / "uv.lock")
                     logging.debug(
-                        f"Copied lock file from {lock_path} to {final_destination}/uv.lock"
+                        "Copied lock file from %s to %s/uv.lock",
+                        lock_path,
+                        final_destination,
                     )
 
                     # Replace cookiecutter project name with actual project name in lock file
@@ -1640,7 +1685,7 @@ def process_template(
                         )
                         lock_file.truncate()
                     logging.debug(
-                        f"Updated project name in lock file at {lock_file_path}"
+                        "Updated project name in lock file at %s", lock_file_path
                     )
 
         except Exception as e:
@@ -1719,14 +1764,14 @@ def copy_files(
         if not dst.exists():
             try:
                 dst.mkdir(parents=True)
-                logging.debug(f"Created directory: {dst}")
+                logging.debug("Created directory: %s", dst)
             except OSError as e:
                 logging.error(f"Failed to create directory: {dst}")
                 logging.error(f"Error: {e}")
                 raise
         for item in src.iterdir():
             if should_skip(item):
-                logging.debug(f"Skipping file/directory: {item}")
+                logging.debug("Skipping file/directory: %s", item)
                 continue
 
             # Root only: nested AGENTS.md files are the template's own docs.
@@ -1741,21 +1786,21 @@ def copy_files(
                     try:
                         # Ensure parent directory exists before copying
                         d.parent.mkdir(parents=True, exist_ok=True)
-                        logging.debug(f"Copying file: {item} -> {d}")
+                        logging.debug("Copying file: %s -> %s", item, d)
                         shutil.copy2(item, d)
                     except OSError:
                         logging.error(f"Failed to copy: {item} -> {d}")
                         log_windows_path_warning(d)
                         raise
                 else:
-                    logging.debug(f"Skipping existing file: {d}")
+                    logging.debug("Skipping existing file: %s", d)
     else:
         if not should_skip(src):
             if overwrite or not dst.exists():
                 try:
                     # Ensure parent directory exists before copying
                     dst.parent.mkdir(parents=True, exist_ok=True)
-                    logging.debug(f"Copying file: {src} -> {dst}")
+                    logging.debug("Copying file: %s -> %s", src, dst)
                     shutil.copy2(src, dst)
                 except OSError:
                     logging.error(f"Failed to copy: {src} -> {dst}")
@@ -1774,7 +1819,7 @@ def copy_frontend_files(frontend_type: str, project_template: pathlib.Path) -> N
     frontends_path = pathlib.Path(__file__).parent.parent / "frontends" / frontend_type
 
     if frontends_path.exists():
-        logging.debug(f"Copying frontend files from {frontends_path}")
+        logging.debug("Copying frontend files from %s", frontends_path)
         # Copy frontend files directly to project root instead of a nested frontend directory
         copy_files(frontends_path, project_template, overwrite=True)
     else:
@@ -1802,7 +1847,7 @@ def copy_deployment_files(
     )
 
     if deployment_path.exists():
-        logging.debug(f"Copying deployment files from {deployment_path}")
+        logging.debug("Copying deployment files from %s", deployment_path)
         # Pass agent_name to respect agent-specific exclusions
         copy_files(
             deployment_path,
@@ -1892,20 +1937,23 @@ def copy_flat_structure_agent_files(
                 dest_file = agent_dst / item.name
                 _assert_path_within(dest_file, dst)
                 logging.debug(
-                    f"Flat structure: copying {item.name} -> {agent_directory}/{item.name}"
+                    "Flat structure: copying %s -> %s/%s",
+                    item.name,
+                    agent_directory,
+                    item.name,
                 )
                 shutil.copy2(item, dest_file)
             else:
                 # Other files go to project root
                 dest_file = dst / item.name
                 _assert_path_within(dest_file, dst)
-                logging.debug(f"Flat structure: copying {item.name} -> {item.name}")
+                logging.debug("Flat structure: copying %s -> %s", item.name, item.name)
                 shutil.copy2(item, dest_file)
         elif item.is_dir():
             # Directories are copied to project root (preserving structure)
             dest_dir = dst / item.name
             _assert_path_within(dest_dir, dst)
-            logging.debug(f"Flat structure: copying directory {item.name}")
+            logging.debug("Flat structure: copying directory %s", item.name)
             if dest_dir.exists():
                 shutil.rmtree(dest_dir)
             shutil.copytree(item, dest_dir, ignore=_skip_symlinks)

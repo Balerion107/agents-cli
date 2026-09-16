@@ -158,8 +158,13 @@ def _build_go_playground(
         "-path_prefix",
         "/",
         "webui",
-        "--api_server_address",
-        f"http://localhost:{port}",
+        # Serve the UI and the API from the same origin: an empty
+        # api_server_address makes the web UI issue relative (same-origin)
+        # requests, so it works whether the browser hits 127.0.0.1, localhost,
+        # or a LAN IP, and never touches localhost/::1 on Windows. A non-empty
+        # value (e.g. http://localhost:PORT) is a different origin from the
+        # 127.0.0.1 page above and gets blocked by the browser (b/557275644).
+        "--api_server_address=",
     ]
     return url, args
 

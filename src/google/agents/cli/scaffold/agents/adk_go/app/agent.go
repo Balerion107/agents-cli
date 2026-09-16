@@ -28,7 +28,7 @@ import (
 )
 
 // modelName is the Gemini model used by the root agent.
-const modelName = "gemini-3.7-flash"
+const modelName = "{{cookiecutter.default_model}}"
 
 // GetWeatherArgs defines the input for the get_weather tool.
 type GetWeatherArgs struct {
@@ -90,12 +90,11 @@ func NewRootAgent(ctx context.Context) (agent.Agent, error) {
 	}
 
 	rootAgent, err := llmagent.New(llmagent.Config{
-{#- TODO: b/555696266 - restore cookiecutter.root_agent_name once ADK Go stops
-    serving the app under the root agent's name. NewSingleLoader lists the app
-    as rootAgent.Name(), so this value is also the {app_name} in
-    /apps/{app_name}/... and /a2a/{app_name}/... -- which agents-cli resolves
-    from agent_directory. Naming the agent anything else 404s every route. #}
-		Name:        "{{cookiecutter.agent_directory}}",
+		// Keep in sync with agents-cli-manifest.yaml: agents-cli derives this name
+		// from the project `name:` recorded there, and telemetry reports it as
+		// gen_ai.agent.name. Renaming the agent only here makes the two disagree,
+		// and anything selecting traces by name stops finding this agent's.
+		Name:        "{{cookiecutter.root_agent_name}}",
 		Model:       model,
 		Description: "A helpful AI assistant.",
 		Instruction: "You are a helpful AI assistant designed to provide accurate and useful information.",

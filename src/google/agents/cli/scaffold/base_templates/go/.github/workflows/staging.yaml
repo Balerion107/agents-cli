@@ -24,8 +24,6 @@ on:
       - 'deployment/**'
       - 'go.mod'
       - 'go.sum'
-      - 'main.go'
-      - 'Dockerfile'
 
 jobs:
   deploy_and_test_staging:
@@ -37,6 +35,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+      
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.0.0
 
       - id: 'auth'
         name: 'Authenticate to Google Cloud'
@@ -52,100 +58,135 @@ jobs:
         with:
           install_components: 'beta'
 
+{%- if cookiecutter.deployment_target == 'cloud_run' or cookiecutter.deployment_target == 'gke' %}
+
       - name: Configure Docker for Artifact Registry
         run: |
           gcloud auth configure-docker {% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev --quiet
 
       - name: Build and Push Docker Image
         run: |
-          docker build -t {% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev/{% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}/{% raw %}${{ vars.ARTIFACT_REGISTRY_REPO_NAME }}{% endraw %}/{% raw %}${{ vars.CONTAINER_NAME }}{% endraw %}{%- if cookiecutter.deployment_target == 'gke' %}:{% raw %}${{ github.sha }}{% endraw %}{%- endif %} \
-            --build-arg COMMIT_SHA={% raw %}${{ github.sha }}{% endraw %} \
+          docker build -t {% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev/{% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}/{% raw %}${{ vars.ARTIFACT_REGISTRY_REPO_NAME }}{% endraw %}/{% raw %}${{ vars.CONTAINER_NAME }}{% endraw %}:{% raw %}${{ github.sha }}{% endraw %} \
             .
-          docker push {% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev/{% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}/{% raw %}${{ vars.ARTIFACT_REGISTRY_REPO_NAME }}{% endraw %}/{% raw %}${{ vars.CONTAINER_NAME }}{% endraw %}{%- if cookiecutter.deployment_target == 'gke' %}:{% raw %}${{ github.sha }}{% endraw %}{%- endif %}
+          docker push {% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev/{% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}/{% raw %}${{ vars.ARTIFACT_REGISTRY_REPO_NAME }}{% endraw %}/{% raw %}${{ vars.CONTAINER_NAME }}{% endraw %}:{% raw %}${{ github.sha }}{% endraw %}
+{%- endif %}
+{%- if cookiecutter.deployment_target == 'cloud_run' %}
 
-      {%- if cookiecutter.deployment_target == 'cloud_run' %}
-
-      - name: Deploy to Cloud Run (Staging)
+      - name: Deploy to Staging (Cloud Run)
         run: |
-          gcloud run deploy {{cookiecutter.project_name}} \
-            --image {% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev/{% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}/{% raw %}${{ vars.ARTIFACT_REGISTRY_REPO_NAME }}{% endraw %}/{% raw %}${{ vars.CONTAINER_NAME }}{% endraw %} \
-            --region {% raw %}${{ vars.REGION }}{% endraw %} \
-            --project {% raw %}${{ vars.STAGING_PROJECT_ID }}{% endraw %}
-
-      - name: Get Staging URL
-        id: staging-url
-        run: |
-          URL=$(gcloud run services describe {{cookiecutter.project_name}} \
-            --region {% raw %}${{ vars.REGION }}{% endraw %} \
+          {%- if cookiecutter.wheel_gcs_uri %}
+          gsutil cp {{ cookiecutter.wheel_gcs_uri }} /tmp/
+          uvx --from /tmp/{{ cookiecutter.wheel_gcs_uri.split('/')[-1] }} google-agents-cli deploy \
+          {%- else %}
+          uvx google-agents-cli{{ cookiecutter.agents_cli_version_pin }} deploy \
+          {%- endif %}
             --project {% raw %}${{ vars.STAGING_PROJECT_ID }}{% endraw %} \
-            --format="value(status.url)")
-          echo "url=$URL" >> $GITHUB_OUTPUT
+            --region {% raw %}${{ vars.REGION }}{% endraw %} \
+            --image {% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev/{% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}/{% raw %}${{ vars.ARTIFACT_REGISTRY_REPO_NAME }}{% endraw %}/{% raw %}${{ vars.CONTAINER_NAME }}{% endraw %}:{% raw %}${{ github.sha }}{% endraw %} \
+            --update-env-vars="OTEL_RESOURCE_ATTRIBUTES=service.version={% raw %}${{ github.sha }}{% endraw %}"
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-
-      - name: Get ID Token
-        id: id-token
+      - name: Fetch Staging Service URL
+        id: fetch-url
         run: |
-          TOKEN=$(gcloud auth print-identity-token --impersonate-service-account={% raw %}${{ secrets.GCP_SERVICE_ACCOUNT }}{% endraw %} -q)
-          echo "::add-mask::${TOKEN}"
-          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+          _STAGING_URL=$(gcloud run services describe {{cookiecutter.project_name}} \
+            --region {% raw %}${{ vars.REGION }}{% endraw %} --project {% raw %}${{ vars.STAGING_PROJECT_ID }}{% endraw %} --format="value(status.url)")
+          echo "_staging_url=${_STAGING_URL}" >> $GITHUB_OUTPUT
 
-      - name: Run Load Tests
+      - name: Fetch ID Token
+        id: fetch-token
         run: |
-          go test -v -tags=load ./e2e/load_test/... \
-            -staging-url={% raw %}${{ steps.staging-url.outputs.url }}{% endraw %} \
-            -duration=30s -users=10 -ramp=0.5
-        env:
-          _ID_TOKEN: {% raw %}${{ steps.id-token.outputs.token }}{% endraw %}
-          _STAGING_URL: {% raw %}${{ steps.staging-url.outputs.url }}{% endraw %}
+          _ID_TOKEN=$(gcloud auth print-identity-token --impersonate-service-account={% raw %}${{ secrets.GCP_SERVICE_ACCOUNT }}{% endraw %} -q)
+          echo "::add-mask::${_ID_TOKEN}"
+          echo "_id_token=${_ID_TOKEN}" >> $GITHUB_OUTPUT
 
-      {%- elif cookiecutter.deployment_target == 'gke' %}
+{%- elif cookiecutter.deployment_target == 'gke' %}
+
+      - name: Deploy to GKE (Staging)
+        run: |
+          {%- if cookiecutter.wheel_gcs_uri %}
+          gsutil cp {{ cookiecutter.wheel_gcs_uri }} /tmp/
+          uvx --from /tmp/{{ cookiecutter.wheel_gcs_uri.split('/')[-1] }} google-agents-cli deploy \
+          {%- else %}
+          uvx google-agents-cli{{ cookiecutter.agents_cli_version_pin }} deploy \
+          {%- endif %}
+            --project {% raw %}${{ vars.STAGING_PROJECT_ID }}{% endraw %} \
+            --region {% raw %}${{ vars.REGION }}{% endraw %} \
+            --cluster-name {% raw %}${{ vars.GKE_CLUSTER_NAME_STAGING }}{% endraw %} \
+            --image {% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev/{% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}/{% raw %}${{ vars.ARTIFACT_REGISTRY_REPO_NAME }}{% endraw %}/{% raw %}${{ vars.CONTAINER_NAME }}{% endraw %}:{% raw %}${{ github.sha }}{% endraw %} \
+            --update-env-vars="OTEL_RESOURCE_ATTRIBUTES=service.version={% raw %}${{ github.sha }}{% endraw %}"
 
       - name: Get GKE Credentials
-        uses: google-github-actions/get-gke-credentials@v2
+        uses: 'google-github-actions/get-gke-credentials@v2'
         with:
           cluster_name: {% raw %}${{ vars.GKE_CLUSTER_NAME_STAGING }}{% endraw %}
           location: {% raw %}${{ vars.REGION }}{% endraw %}
           project_id: {% raw %}${{ vars.STAGING_PROJECT_ID }}{% endraw %}
 
-      - name: Deploy to GKE (Staging)
-        run: |
-          kubectl set image deployment/{{cookiecutter.project_name}} \
-            {{cookiecutter.project_name}}={% raw %}${{ vars.REGION }}{% endraw %}-docker.pkg.dev/{% raw %}${{ vars.CICD_PROJECT_ID }}{% endraw %}/{% raw %}${{ vars.ARTIFACT_REGISTRY_REPO_NAME }}{% endraw %}/{% raw %}${{ vars.CONTAINER_NAME }}{% endraw %}:{% raw %}${{ github.sha }}{% endraw %} \
-            --namespace={{cookiecutter.project_name}}
-          EXTERNAL_IP=$(kubectl get svc {{cookiecutter.project_name}} --namespace={{cookiecutter.project_name}} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-          [ -n "$EXTERNAL_IP" ] && kubectl set env deployment/{{cookiecutter.project_name}} APP_URL=http://$EXTERNAL_IP:8080 --namespace={{cookiecutter.project_name}}
-          kubectl rollout status deployment/{{cookiecutter.project_name}} \
-            --namespace={{cookiecutter.project_name}} \
-            --timeout=300s
-
       - name: Start port-forward to GKE service
         id: port-forward
         run: |
-          kubectl port-forward svc/{{cookiecutter.project_name}} 8080:8080 --namespace={{cookiecutter.project_name}} &
+          kubectl port-forward svc/{{cookiecutter.project_name}} 8080:8080 -n {{cookiecutter.project_name}} &
           echo "pf_pid=$!" >> $GITHUB_OUTPUT
           sleep 5
+
+{%- elif cookiecutter.deployment_target == 'agent_runtime' %}
+
+      - name: Deploy to Staging (Agent Runtime)
+        run: |
+          {%- if cookiecutter.wheel_gcs_uri %}
+          gsutil cp {{ cookiecutter.wheel_gcs_uri }} /tmp/
+          uvx --from /tmp/{{ cookiecutter.wheel_gcs_uri.split('/')[-1] }} google-agents-cli deploy \
+          {%- else %}
+          uvx google-agents-cli{{ cookiecutter.agents_cli_version_pin }} deploy \
+          {%- endif %}
+            --project {% raw %}${{ vars.STAGING_PROJECT_ID }}{% endraw %} \
+            --region {% raw %}${{ vars.REGION }}{% endraw %} \
+            --service-account={% raw %}${{ vars.APP_SERVICE_ACCOUNT_STAGING }}{% endraw %} \
+            --update-env-vars="OTEL_RESOURCE_ATTRIBUTES=service.version={% raw %}${{ github.sha }}{% endraw %},LOGS_BUCKET_NAME={% raw %}${{ vars.LOGS_BUCKET_NAME_STAGING }}{% endraw %}"
+
+      - name: Fetch Auth Token
+        id: fetch-token
+        run: |
+          _AUTH_TOKEN=$(gcloud auth print-access-token -q)
+          echo "::add-mask::${_AUTH_TOKEN}"
+          echo "_auth_token=${_AUTH_TOKEN}" >> $GITHUB_OUTPUT
+{%- endif %}
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.26'
 
-      - name: Run Load Tests
+      - name: Run load test
         run: |
+          mkdir -p e2e/load_test/.results
+{%- if cookiecutter.deployment_target == 'cloud_run' %}
+          export _ID_TOKEN="{% raw %}${{ steps.fetch-token.outputs._id_token }}{% endraw %}"
+          export _STAGING_URL="{% raw %}${{ steps.fetch-url.outputs._staging_url }}{% endraw %}"
+          go test -v -tags=load ./e2e/load_test/... \
+            -staging-url=${_STAGING_URL} \
+            -duration=30s -users=10 -ramp=0.5 2>&1 | tee e2e/load_test/.results/results.log
+{%- elif cookiecutter.deployment_target == 'gke' %}
           go test -v -tags=load ./e2e/load_test/... \
             -staging-url=http://127.0.0.1:8080 \
-            -duration=30s -users=10 -ramp=0.5
-          LOAD_TEST_EXIT_CODE=$?
+            -duration=30s -users=10 -ramp=0.5 2>&1 | tee e2e/load_test/.results/results.log
+          LOAD_TEST_EXIT_CODE=${PIPESTATUS[0]}
           kill {% raw %}${{ steps.port-forward.outputs.pf_pid }}{% endraw %} || true
           exit $LOAD_TEST_EXIT_CODE
-        env:
-          _STAGING_URL: http://127.0.0.1:8080
+{%- elif cookiecutter.deployment_target == 'agent_runtime' %}
+          export _AUTH_TOKEN="{% raw %}${{ steps.fetch-token.outputs._auth_token }}{% endraw %}"
+          go test -v -tags=load ./e2e/load_test/... \
+            -duration=30s -users=2 -ramp=0.5 2>&1 | tee e2e/load_test/.results/results.log
+{%- endif %}
 
-      {%- endif %}
+      - name: Export Load Test Results to GCS
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          gcloud storage cp --recursive e2e/load_test/.results gs://{% raw %}${{ vars.LOGS_BUCKET_NAME_STAGING }}{% endraw %}/load-test-results/results-${TIMESTAMP} --quiet
+          echo "_________________________________________________________________________"
+          echo "Load test results copied to gs://{% raw %}${{ vars.LOGS_BUCKET_NAME_STAGING }}{% endraw %}/load-test-results/results-${TIMESTAMP}"
+          echo "HTTP link: https://console.cloud.google.com/storage/browser/{% raw %}${{ vars.LOGS_BUCKET_NAME_STAGING }}{% endraw %}/load-test-results/results-${TIMESTAMP}"
+          echo "_________________________________________________________________________"
 
   call_production_workflow:
     needs: deploy_and_test_staging

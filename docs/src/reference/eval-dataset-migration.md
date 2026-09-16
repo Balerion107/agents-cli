@@ -8,7 +8,7 @@ If your project doesn't have a `tests/eval/evalsets/` directory, you don't need 
 
 ## Automatic migration
 
-`agents-cli scaffold upgrade` detects legacy `*.evalset.json` files and converts them to the new format automatically. The conversion follows the rules below: it writes new files under `tests/eval/datasets/`, skips destinations that already exist, and leaves the legacy directory in place so you can verify before deleting. `eval generate` will populate `agent_data.agents` from your live agent on the next run, so the migrator doesn't write a stub.
+`agents-cli scaffold upgrade` detects legacy `*.evalset.json` files and converts them to the new format automatically. The conversion follows the rules below: it writes new files under `tests/eval/datasets/`, skips destinations that already exist, and leaves the legacy directory in place so you can verify before deleting. `eval generate` will populate `agent_data.agents` from your live agent on the next run, so the migrator doesn't write a stub. It does not carry over `session_input.state`; a case that relied on seeded state needs the hand edit in [Seeding session state](#seeding-session-state).
 
 If you'd rather do the conversion by hand, the rest of this page walks through the schema changes.
 
@@ -69,7 +69,7 @@ Three changes per case:
 
 - `eval_id` → `eval_case_id`.
 - The first turn's `conversation[0].user_content` is hoisted to a top-level `prompt`.
-- `session_input` is dropped. Agent state initialization moves into your agent code (`app/agent.py`) rather than being declared in the eval data.
+- `session_input` is dropped. `app_name` and `user_id` are chosen by `eval generate`; a non-empty `state` has to be re-expressed by hand as a seed event (see [Seeding session state](#seeding-session-state)).
 
 **Old:**
 ```json
@@ -190,6 +190,38 @@ Each entry under `agent_data.turns[].events` is an event with an `author` (eithe
 `eval generate` will run the agent against this history and append its reply as the next agent event, producing a populated trace ready for `eval grade`.
 
 If your old case had `final_response` set on the **last** turn (the one being graded) to express a gold answer, that's a different concept — put it on a top-level `reference` field rather than mixing it into `agent_data.turns`. Past actual responses go into the turn history; the target answer for the final user message goes into `reference`.
+
+### Seeding Session State
+
+The old `session_input.state` block has no top-level equivalent. Express it instead as a `state_delta` on an event at the front of `agent_data.turns[0].events`; `eval generate` seeds those events into the fresh session before running the case, and the delta is applied to session state.
+
+A case that needs seeded state has to use **Shape B**, since Shape A carries no events. The seed event needs no content. Putting the delta on the final user message works too — it is applied before that turn runs — but a separate seed event keeps the intent readable:
+
+```json
+{
+  "eval_case_id": "halted_turn",
+  "agent_data": {
+    "turns": [
+      {
+        "turn_index": 0,
+        "events": [
+          {
+            "author": "user",
+            "state_delta": {"halt_reason": "repeated tool failure"}
+          },
+          {
+            "author": "user",
+            "content": {
+              "role": "user",
+              "parts": [{"text": "Try that again."}]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
 
 ---
 

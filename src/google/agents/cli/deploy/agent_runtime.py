@@ -74,6 +74,7 @@ from google.agents.cli.deploy._utils import (
     validate_deployment_region,
 )
 from google.agents.cli.scaffold.utils.language import (
+    dispatch_language,
     get_language_config,
     get_project_version,
 )
@@ -120,6 +121,7 @@ def _build_runtime_env_vars(
     set_env_vars: str | None,
     secrets: dict[str, dict[str, str]],
     port: int | None = None,
+    language: str | None = None,
 ) -> dict[str, Any]:
     """Assemble the runtime env vars for the deployed Agent Runtime.
 
@@ -134,7 +136,9 @@ def _build_runtime_env_vars(
       Read only when the user hasn't supplied a value, so an override skips
       the read and its missing-version warning.
     - ``PORT`` — the container port, when one is supplied.
-    - telemetry toggles — Cloud Trace export and prompt/response capture in spans.
+    - telemetry toggles — Cloud Trace export and prompt/response capture, off by
+      default: Go uses ``false`` (opt-in; set ``true`` for the completions view),
+      Python keeps ``NO_CONTENT`` (content goes to GCS via the completion hook).
     """
     # Project .env is the base layer; explicit --update-env-vars wins over it.
     env_vars: dict[str, Any] = read_project_dotenv(find_project_root() or Path.cwd())
@@ -164,8 +168,12 @@ def _build_runtime_env_vars(
         env_vars.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "true")
         env_vars.setdefault("GOOGLE_CLOUD_LOCATION", "global")
     env_vars.setdefault("GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY", "true")
+    # Prompt/response content capture, off by default (opt-in). Go: set "true" to
+    # log content to OTLP log events for the completions view (parsed as a boolean).
+    # Python: content goes to GCS via the completion hook, so NO_CONTENT.
     env_vars.setdefault(
-        "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "NO_CONTENT"
+        "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
+        "false" if language == "go" else "NO_CONTENT",
     )
     # Fail closed: ADK defaults content-in-spans to true; keep it off for bare deploys.
     env_vars.setdefault("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false")
@@ -195,6 +203,37 @@ def _existing_labels(agent: AgentEngine) -> dict[str, str]:
     if not agent.api_resource:
         return {}
     return agent.api_resource.labels or {}
+
+
+# The shape of spec.effective_identity that denotes Agent Identity.
+# Accepts strings that follow the pattern
+# agents.global.{org}.system.id.goog/resources/aiplatform/projects/{project}/locations/{location}/reasoningEngines/{engine}.
+_AGENT_IDENTITY_PRINCIPAL_RE = re.compile(
+    r"^agents\.global\.[^/]+\.system\.id\.goog/resources/aiplatform/"
+    r"projects/[^/]+/locations/[^/]+/reasoningEngines/[^/]+$"
+)
+
+
+def _is_agent_identity_principal(effective_identity: str | None) -> bool:
+    """Whether an effective identity is an Agent Identity principal."""
+    return bool(
+        effective_identity and _AGENT_IDENTITY_PRINCIPAL_RE.match(effective_identity)
+    )
+
+
+def _resolve_identity_type(
+    agent_identity: bool | None, is_updating: bool
+) -> IdentityType | None:
+    if agent_identity is True:
+        return IdentityType.AGENT_IDENTITY
+    elif agent_identity is False:
+        return IdentityType.IDENTITY_TYPE_UNSPECIFIED
+    else:
+        # On update, None means "no change", on create it's "do not use Agent Identity"
+        if is_updating:
+            return None
+        else:
+            return IdentityType.IDENTITY_TYPE_UNSPECIFIED
 
 
 def _get_resource_name_from_operation(operation_name: str) -> str:
@@ -247,7 +286,6 @@ def print_deployment_success(
     """Print deployment success message with console URL."""
     resource_name_parts = remote_agent.api_resource.name.split("/")
     agent_runtime_id = resource_name_parts[-1]
-    project_number = resource_name_parts[1]
 
     if cfg.is_a2a:
         print("\n✅ Deployment successful!")
@@ -274,14 +312,11 @@ def print_deployment_success(
     print(f"Agent Runtime ID: {remote_agent.api_resource.name}")
 
     spec = getattr(remote_agent.api_resource, "spec", None)
-    service_account = getattr(spec, "service_account", None) if spec else None
-    if service_account:
-        print(f"Service Account: {service_account}")
+    identity = getattr(spec, "effective_identity", None) if spec else None
+    if _is_agent_identity_principal(identity):
+        print(f"Agent Identity: principal://{identity}")
     else:
-        default_sa = (
-            f"service-{project_number}@gcp-sa-aiplatform-re.iam.gserviceaccount.com"
-        )
-        print(f"Service Account: {default_sa}")
+        print(f"Service Account: {identity}")
 
     console_url = (
         f"https://console.cloud.google.com/vertex-ai/agents/agent-engines/"
@@ -290,31 +325,36 @@ def print_deployment_success(
     print(f"\n📊 View in Console: {console_url}\n")
 
 
-def setup_agent_identity(client: Any, project: str, display_name: str) -> Any:
-    """Create agent with identity and grant required IAM roles."""
-    click.echo(f"\n🔧 Creating agent identity for: {display_name}")
-    agent = client.agent_engines.create(
-        config={
-            "identity_type": IdentityType.AGENT_IDENTITY,
-            "display_name": display_name,
-        }
-    )
+AGENT_IDENTITY_ROLES = (
+    "roles/aiplatform.user",
+    "roles/serviceusage.serviceUsageConsumer",
+    "roles/browser",
+    "roles/cloudapiregistry.viewer",
+    "roles/logging.logWriter",
+    "roles/monitoring.metricWriter",
+)
 
-    roles = [
-        "roles/aiplatform.user",
-        "roles/serviceusage.serviceUsageConsumer",
-        "roles/browser",
-        "roles/cloudapiregistry.viewer",
-        "roles/logging.logWriter",
-        "roles/monitoring.metricWriter",
-    ]
-    principal = f"principal://{agent.api_resource.spec.effective_identity}"
+
+def grant_agent_identity_roles(project: str, agent: Any) -> None:
+    """Grant the baseline project roles to an agent's own principal."""
+    spec = getattr(agent.api_resource, "spec", None)
+    effective_identity = getattr(spec, "effective_identity", None) if spec else None
+    if not _is_agent_identity_principal(effective_identity):
+        logging.warning(
+            "The agent's effective identity is '%s', not an Agent Identity "
+            "principal, so these roles were not granted: %s",
+            effective_identity or "(unset)",
+            ", ".join(AGENT_IDENTITY_ROLES),
+        )
+        return
+
+    principal = f"principal://{effective_identity}"
     click.echo(f"🔐 Granting IAM roles to: {principal}")
     proj_client = resourcemanager_v3.ProjectsClient()
     policy = proj_client.get_iam_policy(
         request=iam_policy_pb2.GetIamPolicyRequest(resource=f"projects/{project}")
     )
-    for role in roles:
+    for role in AGENT_IDENTITY_ROLES:
         policy.bindings.append(policy_pb2.Binding(role=role, members=[principal]))
     proj_client.set_iam_policy(
         request=iam_policy_pb2.SetIamPolicyRequest(
@@ -322,6 +362,18 @@ def setup_agent_identity(client: Any, project: str, display_name: str) -> Any:
         )
     )
     click.echo("  ✅ Agent identity ready")
+
+
+def setup_agent_identity(client: Any, project: str, display_name: str) -> Any:
+    """Create an agent first, so we know which principal should be granted the IAM roles."""
+    click.echo(f"\n🔧 Creating agent identity for: {display_name}")
+    agent = client.agent_engines.create(
+        config={
+            "identity_type": IdentityType.AGENT_IDENTITY,
+            "display_name": display_name,
+        }
+    )
+    grant_agent_identity_roles(project, agent)
     return agent
 
 
@@ -379,35 +431,6 @@ def _build_agent_gateway_config(
         agent_to_anywhere_config=egress,
         client_to_agent_config=ingress,
     )
-
-
-def _validate_agent_identity(
-    *, agent: Any, agent_identity: bool, display_name: str
-) -> None:
-    """Report a mismatch between ``--agent-identity`` and an existing agent."""
-    spec = getattr(agent.api_resource, "spec", None)
-    has_agent_identity = (
-        getattr(spec, "identity_type", None) == IdentityType.AGENT_IDENTITY
-    )
-    if has_agent_identity and not agent_identity:
-        logging.warning(
-            "Agent '%s' was created with Agent Identity, but --agent-identity "
-            "was not passed. Identity type cannot be changed after creation, so "
-            "the agent keeps it and still runs as its own principal. Pass "
-            "--agent-identity to make that explicit.",
-            display_name,
-        )
-        return
-    elif agent_identity and not has_agent_identity:
-        raise click.ClickException(
-            f"Agent '{display_name}' already exists without Agent Identity, and "
-            "identity type cannot be changed after creation.\n"
-            "  The API would accept --agent-identity here and silently ignore it.\n"
-            "  To get an agent with Agent Identity, either:\n"
-            f"    • Deploy under a new name:  --service-name {display_name}-v2\n"
-            f"    • Delete the existing agent and redeploy:  agents-cli deploy "
-            "--agent-identity"
-        )
 
 
 # agent_runtime switched from reasoning-engine introspection to a container
@@ -515,6 +538,33 @@ def _adk_python_class_methods() -> list[dict[str, str]]:
     ]
 
 
+def _adk_go_class_methods() -> list[dict[str, str]]:
+    """Runtime contract exposed by the ADK Go Agent.
+
+    Mirrors the operations that adk-go registers in its Agent Engine handler
+    (https://github.com/google/adk-go/blob/main/server/agentengine/handler.go#L108).
+    Keep in sync with the Go handler.
+    """
+    return [
+        {"name": "async_create_session", "api_mode": "async"},
+        {"name": "async_get_session", "api_mode": "async"},
+        {"name": "async_list_sessions", "api_mode": "async"},
+        {"name": "async_delete_session", "api_mode": "async"},
+        {"name": "async_stream_query", "api_mode": "async_stream"},
+        {"name": "streaming_agent_run_with_events", "api_mode": "async_stream"},
+    ]
+
+
+# Agent Runtime records a ``class_methods`` contract that clients (the Vertex /
+# Agent Platform SDK) read to reconstruct the callable methods on an Agent Engine.
+CLASS_METHODS_BUILDERS: dict[str, Callable[[], list[dict[str, str]]] | None] = {
+    "python": _adk_python_class_methods,
+    "go": _adk_go_class_methods,
+    "java": None,
+    "typescript": None,
+}
+
+
 def deploy_agent_runtime(
     *,
     cfg: ProjectConfig,
@@ -532,7 +582,7 @@ def deploy_agent_runtime(
     cpu: str | None = None,
     memory: str | None = None,
     container_concurrency: int | None = None,
-    agent_identity: bool = False,
+    agent_identity: bool | None = None,
     no_wait: bool = False,
     update_only: bool = False,
     psc_interface_config: dict | None = None,
@@ -559,7 +609,9 @@ def deploy_agent_runtime(
         cpu: CPU limit.
         memory: Memory limit.
         container_concurrency: Container concurrency.
-        agent_identity: Enable agent identity.
+        agent_identity: Enable or disable Agent Identity. When new agent is
+          created, None defaults to non-Agent Identity identity. When an
+          existing agent is updated, None leaves the current identity unchanged.
         no_wait: If True, start the deployment and return immediately.
         update_only: If True, fail instead of creating an engine that does not
             already exist.
@@ -605,17 +657,30 @@ def deploy_agent_runtime(
         ingress_gateway_name=agent_gateway_ingress,
     )
 
+    if agent_identity:
+        if service_account:
+            # The API rejects setting both at the same time.
+            logging.warning(
+                "--agent-identity overrides --service-account: the agent runs as "
+                "its own principal, so the service account '%s' is ignored and "
+                "cleared from the agent. Drop --service-account to silence this "
+                "warning.",
+                service_account,
+            )
+        service_account = ""
+
     env_vars = _build_runtime_env_vars(
         set_env_vars=set_env_vars,
         secrets=secrets,
         port=port,
+        language=cfg.language,
     )
 
     # Initialize agentplatform client
     client = AgentPlatformClient(
         project=project,
         location=location,
-        api_version="v1beta1" if agent_identity else None,
+        api_version="v1beta1" if (agent_identity is not None) else None,
     )
     agentplatform.init(project=project, location=location)
 
@@ -645,13 +710,6 @@ def deploy_agent_runtime(
             "--apply`), or drop --update-only to let this deploy create it."
         )
 
-    if matching_agents:
-        _validate_agent_identity(
-            agent=matching_agents[0],
-            agent_identity=agent_identity,
-            display_name=display_name,
-        )
-
     # Setup agent identity on first deployment
     if agent_identity and not matching_agents:
         matching_agents = [setup_agent_identity(client, project, display_name)]
@@ -667,11 +725,23 @@ def deploy_agent_runtime(
             else container_concurrency
         )
 
+    # Set it to true if an agent without Agent Identity is being re-deployed
+    # with Agent Identity.
+    migrates_to_agent_identity = False
+
     if matching_agents:
         resource_name = matching_agents[0].api_resource.name
         # list() may return a summary without deployment_spec; get() guarantees
         # the full env/resource_limits are populated.
         existing = client.agent_engines.get(name=resource_name)
+        existing_spec = getattr(existing.api_resource, "spec", None)
+        migrates_to_agent_identity = (
+            agent_identity
+            and is_update
+            and not _is_agent_identity_principal(
+                getattr(existing_spec, "effective_identity", None)
+            )
+        )
         # Preserve env vars set outside this deploy; CLI/user values still win.
         for key, value in _existing_plain_env_vars(existing).items():
             env_vars.setdefault(key, value)
@@ -733,8 +803,8 @@ def deploy_agent_runtime(
     ]
     if service_account:
         params.append(("Service Account", service_account))
-    if agent_identity:
-        params.append(("Agent Identity", "Enabled (Preview)"))
+    if agent_identity is not None:
+        params.append(("Agent Identity", "Enabled" if agent_identity else "Disabled"))
     if psc_interface_config:
         params.append(
             ("Network Attachment", psc_interface_config.get("network_attachment", "—"))
@@ -774,7 +844,7 @@ def deploy_agent_runtime(
         "source_packages": source_packages_list,
         "env_vars": env_vars,
         "service_account": service_account,
-        "identity_type": IdentityType.AGENT_IDENTITY if agent_identity else None,
+        "identity_type": _resolve_identity_type(agent_identity, is_update),
         "description": description,
         "labels": labels if labels else None,
         "min_instances": min_instances,
@@ -806,7 +876,10 @@ def deploy_agent_runtime(
     # reasoning_engine contract), matching the terraform deploy path.
     config_kwargs["agent_framework"] = "google-adk"
 
-    config_kwargs["class_methods"] = _adk_python_class_methods()
+    class_methods_builder = dispatch_language(
+        "deploy", CLASS_METHODS_BUILDERS, cfg.language
+    )
+    config_kwargs["class_methods"] = class_methods_builder()
 
     if psc_interface_config is not None:
         config_kwargs["psc_interface_config"] = psc_interface_config
@@ -859,6 +932,9 @@ def deploy_agent_runtime(
     # to ensure all fields (including the api_resource name) are fully loaded and populated.
     resource_name = _get_resource_name_from_operation(operation.name)
     remote_agent = client.agent_engines.get(name=resource_name)
+
+    if migrates_to_agent_identity:
+        grant_agent_identity_roles(project, remote_agent)
 
     # Clear secrets if explicitly set to empty
     if (

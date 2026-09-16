@@ -202,9 +202,13 @@ data "google_secret_manager_secret" "github_pat" {
   secret_id = var.github_pat_secret_id
 }
 
-# Get CICD project data for Cloud Build service account
+# Get CICD project data for Cloud Build service account.
+# depends_on defers the read to apply time, after bootstrap has enabled Cloud
+# Resource Manager.
 data "google_project" "cicd_project" {
   project_id = var.cicd_runner_project_id
+
+  depends_on = [google_project_service.bootstrap]
 }
 
 # Grant Cloud Build service account access to GitHub PAT secret

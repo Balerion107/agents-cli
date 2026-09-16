@@ -13,15 +13,20 @@
 # limitations under the License.
 
 locals {
+  # Enabled first, through the api_bootstrap provider: the provider needs both
+  # to manage anything else in a project.
+  bootstrap_services = [
+    "serviceusage.googleapis.com",
+    "cloudresourcemanager.googleapis.com",
+  ]
+
   cicd_services = [
     "artifactregistry.googleapis.com",
     "cloudbuild.googleapis.com",
     "aiplatform.googleapis.com",
-    "serviceusage.googleapis.com",
 {%- if cookiecutter.language == "python" %}
     "bigquery.googleapis.com",
 {%- endif %}
-    "cloudresourcemanager.googleapis.com",
     "cloudtrace.googleapis.com",
     "telemetry.googleapis.com",
 {%- if cookiecutter.session_type == "cloud_sql" %}
@@ -39,12 +44,10 @@ locals {
     "compute.googleapis.com",
     "container.googleapis.com",
 {%- endif %}
-    "cloudresourcemanager.googleapis.com",
     "iam.googleapis.com",
 {%- if cookiecutter.language == "python" %}
     "bigquery.googleapis.com",
 {%- endif %}
-    "serviceusage.googleapis.com",
     "logging.googleapis.com",
     "cloudtrace.googleapis.com",
     "telemetry.googleapis.com",

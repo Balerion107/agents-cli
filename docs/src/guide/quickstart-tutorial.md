@@ -54,7 +54,7 @@ The agent definition ends up looking something like:
 ```python title="app/agent.py"
 root_agent = Agent(
     name="caveman_agent",
-    model=Gemini(model="gemini-3.7-flash"),
+    model=Gemini(model="gemini-3.8-flash"),
     instruction="""You caveman compressor. Human give long words,
     you make short. Rules:
     - No articles. No filler. No fluff.

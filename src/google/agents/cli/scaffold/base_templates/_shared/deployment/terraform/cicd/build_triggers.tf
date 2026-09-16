@@ -30,9 +30,15 @@ resource "google_cloudbuild_trigger" "pr_checks" {
   filename = ".cloudbuild/pr_checks.yaml"
   included_files = [
     "{{cookiecutter.agent_directory}}/**",
-    "tests/**",
     "deployment/**",
+{%- if cookiecutter.language == "python" %}
     "uv.lock",
+    "tests/**",
+{%- elif cookiecutter.language == "go" %}
+    "e2e/**",
+    "go.mod",
+    "go.sum",
+{%- endif %}
   ]
   include_build_logs = "INCLUDE_BUILD_LOGS_WITH_STATUS"
   depends_on = [
@@ -61,9 +67,15 @@ resource "google_cloudbuild_trigger" "cd_pipeline" {
   filename = ".cloudbuild/staging.yaml"
   included_files = [
     "{{cookiecutter.agent_directory}}/**",
-    "tests/**",
     "deployment/**",
-    "uv.lock"
+{%- if cookiecutter.language == "python" %}
+    "uv.lock",
+    "tests/**",
+{%- elif cookiecutter.language == "go" %}
+    "e2e/**",
+    "go.mod",
+    "go.sum",
+{%- endif %}
   ]
   include_build_logs = "INCLUDE_BUILD_LOGS_WITH_STATUS"
   substitutions = {

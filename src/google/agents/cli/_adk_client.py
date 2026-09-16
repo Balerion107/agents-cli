@@ -12,18 +12,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared ADK FastAPI HTTP client: session create + ``/run_sse`` stream."""
+"""Shared ADK FastAPI client: session create + ``/run_sse`` and ``/run_live``."""
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Iterator
+import logging
+from collections.abc import (
+    AsyncGenerator,
+    Iterable,
+    Iterator,
+)
+from typing import NamedTuple
+from urllib.parse import urlencode
 
 import requests
 
 _SESSION_TIMEOUT = 30
 _RUN_SSE_TIMEOUT = 120
 _APP_INFO_TIMEOUT = 10
+
+DEFAULT_WS_PATH = "/run_live"
+DEFAULT_TURN_TIMEOUT = 120  # seconds to wait for a turn's turnComplete
+
+# /run_live transcribes it back to text, so output stays gradable.
+DEFAULT_MODALITIES = ("AUDIO",)
 
 
 def create_session(
@@ -104,6 +118,10 @@ def run_sse(
         run_url, headers=headers, json=payload, stream=True, timeout=_RUN_SSE_TIMEOUT
     ) as resp:
         resp.raise_for_status()
+        # Honor the server's explicit charset if provided; otherwise,
+        # fall back to UTF-8 rather than latin-1.
+        if "charset" not in resp.headers.get("Content-Type", "").lower():
+            resp.encoding = "utf-8"
         for line in resp.iter_lines(decode_unicode=True):
             if not isinstance(line, str) or not line.startswith("data: "):
                 continue
@@ -112,3 +130,253 @@ def run_sse(
                 yield json.loads(data_str)
             except json.JSONDecodeError:
                 continue
+
+
+def _event_parts(event: dict) -> list:
+    """Return event's content parts, or an empty list when it carries none."""
+    content = event.get("content")
+    if not isinstance(content, dict):
+        return []
+    parts = content.get("parts")
+    return parts if isinstance(parts, list) else []
+
+
+def _event_has_function_call(event: dict) -> bool:
+    """Return True if event carries a model function call."""
+    return any(
+        isinstance(part, dict) and part.get("functionCall")
+        for part in _event_parts(event)
+    )
+
+
+def _event_has_function_response(event: dict) -> bool:
+    """Return True if event carries a tool's function response."""
+    return any(
+        isinstance(part, dict) and part.get("functionResponse")
+        for part in _event_parts(event)
+    )
+
+
+def _event_has_answer_content(event: dict) -> bool:
+    """Return true if event carries gradable model answer content."""
+    transcription = event.get("outputTranscription")
+    if isinstance(transcription, dict) and transcription.get("text"):
+        return True
+    return any(
+        isinstance(part, dict) and (part.get("text") or part.get("inlineData"))
+        for part in _event_parts(event)
+    )
+
+
+class FinishedTranscript(NamedTuple):
+    """A completed Live transcription frame."""
+
+    # "user" for input transcription, else the event's author (or "model").
+    author: str
+    # "user" or "model" -- the genai Content role for the rendered text.
+    role: str
+    text: str
+
+
+# Live transcription keys mapped to the Content role they represent.
+_TRANSCRIPTION_KEYS = (
+    ("inputTranscription", "user"),
+    ("outputTranscription", "model"),
+)
+
+
+def finished_transcript(event: dict) -> FinishedTranscript | None:
+    """Return the finished transcript carried by event, else None"""
+    for key, role in _TRANSCRIPTION_KEYS:
+        transcription = event.get(key)
+        if not isinstance(transcription, dict):
+            continue
+        if not transcription.get("finished"):
+            return None  # partial chunk; the finished aggregate carries the text
+        text = transcription.get("text")
+        if not text:
+            return None
+        author = "user" if role == "user" else (event.get("author") or "model")
+        return FinishedTranscript(author=author, role=role, text=text)
+    return None
+
+
+def is_transcription_event(event: dict) -> bool:
+    """True if event is a Live transcription frame (finished or partial)."""
+    # An empty transcription is still a transcription frame, not a malformed one.
+    return any(key in event for key, _ in _TRANSCRIPTION_KEYS)
+
+
+def stream_live_events(
+    ws_base: str,
+    app_name: str,
+    session_id: str,
+    *,
+    user_turns: Iterable[dict],
+    headers: dict,
+    user_id: str,
+) -> Iterator[dict | None]:
+    """Stream ADK events for a Live conversation over one /run_live socket."""
+    return _iter_async(
+        _stream_live_events(
+            ws_base,
+            app_name,
+            session_id,
+            user_turns=user_turns,
+            headers=headers,
+            user_id=user_id,
+        )
+    )
+
+
+def group_turns(stream: Iterable[dict | None]) -> Iterator[list[dict]]:
+    """Batch a stream_live_events stream into one event list per turn."""
+    events: list[dict] = []
+    for item in stream:
+        if item is None:
+            yield events
+            events = []
+        else:
+            events.append(item)
+
+
+def build_run_live_url(
+    ws_base: str,
+    app_name: str,
+    session_id: str,
+    *,
+    user_id: str,
+) -> str:
+    """Build the ADK /run_live WebSocket URL from a ws-base."""
+    base = ws_base.rstrip("/")
+    query = [
+        ("app_name", app_name),
+        ("user_id", user_id),
+        ("session_id", session_id),
+    ]
+    query.extend(("modalities", m) for m in DEFAULT_MODALITIES)
+    return f"{base}{DEFAULT_WS_PATH}?{urlencode(query)}"
+
+
+async def _stream_live_events(
+    ws_base: str,
+    app_name: str,
+    session_id: str,
+    *,
+    user_turns: Iterable[dict],
+    headers: dict,
+    user_id: str,
+) -> AsyncGenerator[dict | None, None]:
+    """Play user_turns over one socket, yielding each event as it arrives."""
+    from websockets.asyncio.client import connect as ws_connect
+    from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
+
+    ws_url = build_run_live_url(ws_base, app_name, session_id, user_id=user_id)
+    user_turns = list(user_turns)
+    expected_turns = len(user_turns)
+    extra_headers = {
+        k: v for k, v in (headers or {}).items() if k.lower() != "content-type"
+    }
+
+    async with ws_connect(ws_url, additional_headers=extra_headers or None) as ws:
+        try:
+            for turn_index, content in enumerate(user_turns):
+                # One `content` frame per turn; ADK validates each frame.
+                await ws.send(json.dumps({"content": content}))
+
+                boundary = _TurnBoundary()
+                while True:
+                    try:
+                        raw = await asyncio.wait_for(
+                            ws.recv(), timeout=DEFAULT_TURN_TIMEOUT
+                        )
+                    except TimeoutError:
+                        logging.warning(
+                            "Turn %d: no event for %ds, giving up on the turn.",
+                            turn_index,
+                            DEFAULT_TURN_TIMEOUT,
+                        )
+                        break
+                    except ConnectionClosedOK:
+                        if turn_index + 1 < expected_turns:
+                            logging.warning(
+                                "Turn %d: the agent closed the stream; "
+                                "%d later turn(s) were never sent.",
+                                turn_index,
+                                expected_turns - turn_index - 1,
+                            )
+                        yield None  # end of turn
+                        return
+
+                    event = _decode_ws_frame(raw)
+                    if event is None:
+                        continue
+                    yield event
+                    if boundary.is_terminal(event):
+                        break
+
+                yield None  # end of turn
+        finally:
+            try:
+                await ws.send(json.dumps({"close": True}))
+            except ConnectionClosed:
+                pass
+
+
+class _TurnBoundary:
+    """Detect the terminal turnComplete of one logical live turn."""
+
+    def __init__(self) -> None:
+        self._tool_call_open = False
+        self._tool_response_seen = False
+
+    def is_terminal(self, event: dict) -> bool:
+        """Feed one event; return True if it ends the current logical turn."""
+        if _event_has_function_call(event):
+            # Anything spoken before the call is not the post-tool answer.
+            self._tool_call_open = True
+            self._tool_response_seen = False
+        elif _event_has_function_response(event):
+            if self._tool_call_open:
+                self._tool_response_seen = True
+        elif _event_has_answer_content(event):
+            self._tool_call_open = False
+            self._tool_response_seen = False
+
+        if event.get("turnComplete"):
+            if self._tool_call_open and self._tool_response_seen:
+                # Terminator for the tool round-trip; keep reading for the answer.
+                self._tool_call_open = False
+                self._tool_response_seen = False
+                return False
+            return True
+        return False
+
+
+def _decode_ws_frame(raw) -> dict | None:
+    """Decode a /run_live frame into an ADK event dict, or None for audio."""
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            return json.loads(bytes(raw).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def _iter_async(agen) -> Iterator:
+    """Drive an async generator from sync code on a dedicated event loop."""
+    loop = asyncio.new_event_loop()
+    try:
+        while True:
+            try:
+                yield loop.run_until_complete(agen.__anext__())
+            except StopAsyncIteration:
+                break
+    finally:
+        loop.run_until_complete(agen.aclose())
+        # Finalize websockets' own async generators before closing the loop.
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()

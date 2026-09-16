@@ -94,13 +94,13 @@ custom_metrics:
       Final response: {response}
       Full trace (for tool-call and reasoning context): {agent_data}
       Return JSON: {"score": <1|2|3|4|5>, "explanation": "<reason>"}
-    judge_model: gemini-3.7-flash
+    judge_model: gemini-3.8-flash
     judge_model_sampling_count: 3
 ```
 
 Each custom metric must conform to either the **Code Execution Metric** or **LLM-as-a-Judge Metric** (`LLMMetric`) schema:
 - **Code Execution Metric**: Used to run custom Python code for evaluation. Must have a `name` and a `custom_function` (containing a `def evaluate(instance):` signature). By default, the function executes **locally in the CLI process** — no GCP project or region is required, but the user-supplied code runs with the CLI's privileges. Add `"execution": "remote"` to opt into Vertex AI's sandboxed `CodeExecutionMetric` (server-side), which requires a configured GCP project + region.
-- **LLM-as-a-Judge Metric**: Used to evaluate responses using an LLM judge. Must have a `name` and a `prompt_template`. Optional fields include `judge_model` (e.g., `gemini-3.7-flash`) and `judge_model_sampling_count` (between `1` and `32`).
+- **LLM-as-a-Judge Metric**: Used to evaluate responses using an LLM judge. Must have a `name` and a `prompt_template`. Optional fields include `judge_model` (e.g., `gemini-3.8-flash`) and `judge_model_sampling_count` (between `1` and `32`).
 
 ### Quick Reference for Common Scenarios
 

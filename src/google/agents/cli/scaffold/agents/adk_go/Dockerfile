@@ -27,6 +27,7 @@ RUN go mod download
 COPY *.go ./
 COPY {{cookiecutter.agent_directory}}/ ./{{cookiecutter.agent_directory}}/
 COPY appinfo/ ./appinfo/
+COPY sessions/ ./sessions/
 
 # Build the binary
 RUN CGO_ENABLED=0 GOOS=linux go build -o /agent .

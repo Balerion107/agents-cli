@@ -96,6 +96,9 @@ def split_case_history(
 ) -> tuple[list[evals_types.AgentEvent], genai_types.Content]:
     """Split a case into prior events and user message to send.
 
+    A state delta on the trailing event is kept as a content-less prior event,
+    since the message itself is forwarded as bare content.
+
     Raises ValueError if the case has both `prompt` and non-empty
     `agent_data.turns` (ambiguous), or neither, or if the last
     message in `turns` is not a valid user message.
@@ -121,7 +124,24 @@ def split_case_history(
     last = prior_events.pop()
     if last.content is None:
         raise ValueError("Trailing user event has no content to send to /run_sse.")
+    if last.state_delta:
+        prior_events.append(last.model_copy(update={"content": None}))
     return prior_events, last.content
+
+
+def _to_adk_event_payload(event: evals_types.AgentEvent) -> dict:
+    """Serialize a seeded prior event into ADK's ``Event`` wire shape.
+
+    ADK reads a state delta from ``actions.state_delta`` and ignores unknown
+    top-level fields, so an unnested delta leaves the case graded against an
+    agent that never saw the state. JSON mode because ``event_time`` is a
+    ``datetime`` and ``requests`` cannot encode it.
+    """
+    payload = event.model_dump(exclude_none=True, by_alias=True, mode="json")
+    state_delta = payload.pop("stateDelta", None)
+    if state_delta:
+        payload["actions"] = {"stateDelta": state_delta}
+    return payload
 
 
 def merge_events_into_case(
@@ -244,10 +264,7 @@ def run_case(
             app_name,
             user_id,
             headers=headers,
-            prior_events=(
-                [e.model_dump(exclude_none=True, by_alias=True) for e in prior_events]
-                or None
-            ),
+            prior_events=[_to_adk_event_payload(e) for e in prior_events] or None,
         )
     except Exception as exc:
         return case, f"Session create failed: {type(exc).__name__}: {exc}"
@@ -258,7 +275,9 @@ def run_case(
             base_url,
             app_name,
             session_id,
-            user_message=user_message.model_dump(exclude_none=True, by_alias=True),
+            user_message=user_message.model_dump(
+                exclude_none=True, by_alias=True, mode="json"
+            ),
             headers=headers,
             user_id=user_id,
         ):
@@ -477,8 +496,8 @@ def _print_failure_summary(
         "Each case must provide one of: a top-level 'prompt' field "
         "(single user message), or 'agent_data' whose turns end with a "
         "user message (continued conversation; appends the next agent "
-        f"response). Defaults to '{_paths.DEFAULT_INPUT_DATASET}' (the "
-        "file scaffolded by `agents-cli create`)."
+        f"response). Defaults to '{' or '.join(_paths.DEFAULT_INPUT_DATASETS)}' "
+        "(the file scaffolded by `agents-cli create`)."
     ),
 )
 @click.option(
@@ -577,7 +596,7 @@ def cmd_generate(
     if not dataset:
         raise click.ClickException(
             "No --dataset specified and default "
-            f"({_paths.DEFAULT_INPUT_DATASET}) not found. "
+            f"({' or '.join(_paths.DEFAULT_INPUT_DATASETS)}) not found. "
             "Specify --dataset PATH."
         )
 
@@ -698,4 +717,5 @@ def _run_against_local_server(
             custom_headers=custom_headers,
         )
     finally:
-        stop_server(project_root)
+        if server_info.started:
+            stop_server(project_root, pid=server_info.pid)

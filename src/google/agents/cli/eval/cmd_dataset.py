@@ -101,7 +101,7 @@ def dataset_group():
 @click.option(
     "--model",
     default=None,
-    help="Optional. Custom model used for scenario generation. Example: gemini-3.7-flash.",
+    help="Optional. Custom model used for scenario generation. Example: gemini-3.8-flash.",
 )
 @click.option(
     "--max-turns",

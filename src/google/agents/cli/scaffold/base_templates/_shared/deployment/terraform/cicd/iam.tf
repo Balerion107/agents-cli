@@ -12,10 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Data source to get project numbers
+# Data source to get project numbers.
+# depends_on defers the read to apply time, after bootstrap has enabled Cloud
+# Resource Manager.
 data "google_project" "projects" {
   for_each   = local.deploy_project_ids
   project_id = each.value
+
+  depends_on = [google_project_service.bootstrap]
 }
 
 # 1. Assign roles for the CICD project

@@ -12,7 +12,7 @@ description: >
 metadata:
   author: Google
   license: Apache-2.0
-  version: 1.5.0
+  version: 1.6.1
   requires:
     bins:
       - agents-cli
@@ -23,7 +23,8 @@ metadata:
 
 > **Requires:** `agents-cli` (`uv tool install google-agents-cli`) — [install uv](https://docs.astral.sh/uv/getting-started/installation/index.md) first if needed.
 
-> **Scaffolded project?** If you used `/google-agents-cli-scaffold`, you already have `agents-cli eval run` (chains `generate` + `grade`), `tests/eval/datasets/`, and `tests/eval/eval_config.yaml`. Start with executing `eval run` and iterate from there.
+> **Scaffolded project?** If you used `/google-agents-cli-scaffold`, dataset and a custom metric are already scaffolded in `tests/eval/` (Python projects) or `eval/` (Go projects). For simplicity, this skill and its references use the Python directory layout; adjust accordingly if you've scaffolded a Go agent.
+> You already have `agents-cli eval run` (chains `generate` + `grade`), `tests/eval/datasets/`, and `tests/eval/eval_config.yaml`. Start with executing `eval run` and iterate from there.
 
 ## Reference Files
 
@@ -149,7 +150,7 @@ Runs an agent over an evaluation dataset and writes traces to disk.
 
 By default, runs the agent locally and records a trace per evaluation case. You can generate traces from an already-running agent by passing its HTTP endpoint and app name to `--url` and `--app-name`.
 
-> **ADK projects.** The built-in generator serves the agent over HTTP (the project's `fast_api_app.py` if it exists, else `adk api_server`) and drives it over ADK's `/apps/...` and `/run_sse` routes — the same shape `--url` / `--app-name` expect. Extensions for other frameworks replace `eval generate` with their own generator, which may not serve HTTP at all; `--url` and `--app-name` are then unsupported.
+> **ADK projects.** The built-in generator serves the agent over HTTP and drives it over ADK's `/apps/...` and `/run_sse` routes — the same shape `--url` / `--app-name` expect. What it launches depends on the project's language: Python uses the project's `fast_api_app.py` if it exists, else `adk api_server`; Go runs `go run ...`. Extensions for other frameworks replace `eval generate` with their own generator, which may not serve HTTP at all; `--url` and `--app-name` are then unsupported.
 
 ```bash
 # Basic — uses tests/eval/datasets/, writes to artifacts/traces/
@@ -371,7 +372,7 @@ Don't assert that eval passes — show the evidence. Concrete output prevents fa
 ## Related Skills
 
 - `/google-agents-cli-workflow` — Development workflow and the spec-driven build-evaluate-deploy lifecycle
-- `/google-agents-cli-adk-code` — ADK Python API quick reference for writing agent code (ADK projects only)
+- `/google-agents-cli-adk-code` — ADK API quick reference for writing agent code (ADK projects only)
 - `/google-agents-cli-scaffold` — Project creation and enhancement with `agents-cli scaffold create` / `scaffold enhance`
 - `/google-agents-cli-deploy` — Deployment targets, CI/CD pipelines, and production workflows
 - `/google-agents-cli-observability` — Cloud Trace, logging, and monitoring for debugging agent behavior

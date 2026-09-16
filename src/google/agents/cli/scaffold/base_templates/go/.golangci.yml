@@ -13,6 +13,10 @@
 # limitations under the License.
 
 version: "2"
+run:
+  build-tags:
+    - e2e
+    - load
 linters:
   settings:
     errcheck:

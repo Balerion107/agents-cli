@@ -9,6 +9,8 @@ A Go agent built with Google's Agent Development Kit (ADK).
 ├── main.go              # Application entry point
 ├── {{cookiecutter.agent_directory}}/
 │   └── agent.go         # Agent implementation
+├── sessions/
+│   └── sessions.go      # Session backend selection (in-memory / Vertex AI / Cloud SQL)
 ├── e2e/
 │   ├── integration/     # Integration tests
 │   └── load_test/       # Load testing
@@ -48,7 +50,7 @@ A Go agent built with Google's Agent Development Kit (ADK).
    ```bash
    make playground
    ```
-   Open http://localhost:8501/ui/ in your browser.
+   Open http://127.0.0.1:8501/ui/ in your browser.
 
 ## Commands
 

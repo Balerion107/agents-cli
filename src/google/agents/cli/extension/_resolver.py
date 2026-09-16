@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,7 @@ from google.agents.cli._runner import run_resolved
 from google.agents.cli.extension._paths import git_cache_dir_name, git_cache_root
 from google.agents.cli.extension._refs import ExtensionRef
 from google.agents.cli.extension._spec import EXTENSION_FILE
+from google.agents.cli.scaffold.utils.fs import source_ignore_patterns
 
 # Only a full 40-char commit SHA is unambiguous. A short/partial hex string
 # could instead be a branch or tag named like hex (e.g. "cafe123"), so anything
@@ -68,9 +70,70 @@ STAMP_FILE = ".agents-cli-extension-sha"
 # Recorded as the pin of a `local@` extension, which has no commit to point at.
 LOCAL_SHA = "local"
 
-# Skipped when fingerprinting a local source: neither is part of the extension,
-# both churn constantly, and `.git` can dwarf the code beside it.
-_FINGERPRINT_EXCLUDES = frozenset({".git", "__pycache__"})
+
+def _git_ignored(root: Path) -> frozenset[str]:
+    """POSIX paths, relative to ``root``, that git considers ignored there.
+
+    Asked of git rather than parsed out of ``.gitignore``, which buys four
+    things no pattern match of our own would get right: nested ignore files and
+    their negations, ``.git/info/exclude`` and the user's global
+    ``core.excludesFile``, correct results when ``root`` is a subdirectory of
+    the repository whose rules apply (a ``local@…#selector`` ref), and — the one
+    that is a correctness bug rather than a gap — force-added files. Those are
+    tracked, so they are part of the extension however the patterns read, and
+    ``--others`` never lists them.
+
+    Empty when ``root`` is not in a work tree, which is a perfectly ordinary way
+    to hold an extension source — and empty, rather than an error, when there is
+    no git at all: vendoring a local source has never needed one, and gaining a
+    hard dependency on it here would be a regression, not a feature.
+    """
+    try:
+        result = _git(
+            "-C",
+            str(root),
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            # Collapse a wholly-ignored directory to its own name: the point is
+            # to skip `.venv/` without first enumerating what is inside it.
+            "--directory",
+            "-z",
+        )
+    except OSError as e:
+        logging.debug("Could not ask git what %s ignores: %s", root, e)
+        return frozenset()
+    if result.returncode != 0:
+        logging.debug("No git ignore rules apply to %s: %s", root, result.stderr.strip())
+        return frozenset()
+    return frozenset(path.rstrip("/") for path in result.stdout.split("\0") if path)
+
+
+class _SourceExclusions:
+    """What to leave behind when reading an extension source.
+
+    One instance answers for both the fingerprint and the copy, deliberately. If
+    the hash counted something the copy leaves out, every change to it would
+    stamp a mismatch and provoke a re-copy that produces a byte-identical tree —
+    reporting a repair that did not happen.
+    """
+
+    def __init__(self, root: Path, *, use_gitignore: bool):
+        self._root = str(root)
+        # Only for a working directory. A git checkout holds tracked files and
+        # nothing else, so there is nothing ignored in it to find — and asking
+        # anyway would drop a force-added file that the commit genuinely
+        # contains.
+        self._ignored = _git_ignored(root) if use_gitignore else frozenset()
+
+    def __call__(self, directory: str, names: list[str]) -> set[str]:
+        excluded = source_ignore_patterns(directory, names)
+        if not self._ignored:
+            return excluded
+        rel = os.path.relpath(directory, self._root)
+        prefix = "" if rel == os.curdir else f"{Path(rel).as_posix()}/"
+        return excluded | {n for n in names if f"{prefix}{n}" in self._ignored}
 
 
 class ResolverError(Exception):
@@ -96,16 +159,20 @@ def expected_stamp(ref: ExtensionRef, sha: str) -> str:
     """
     if ref.kind != "local":
         return sha
-    return _fingerprint(_local_source_dir(ref))
+    src = _local_source_dir(ref)
+    return _fingerprint(src, _SourceExclusions(src, use_gitignore=True))
 
 
-def _fingerprint(root: Path) -> str:
+def _fingerprint(root: Path, exclude: _SourceExclusions) -> str:
     """Return a hash of the name and contents of every file under ``root``.
 
     Walked in sorted order and keyed on POSIX-style relative paths, so a given
-    tree hashes identically across runs and platforms. Symlinks are skipped to
-    match the vendored copy (see ``_skip_symlinks``), which also keeps the hash
-    from depending on a file the copy never contains.
+    tree hashes identically across runs and platforms.
+
+    Hashes exactly what the copy would contain: symlinks are skipped (see
+    ``_skip_symlinks``) and so is everything ``exclude`` drops, files included —
+    ``.env`` is a file, and hashing one the copy omits would make every edit to
+    it force a re-copy that changes nothing.
 
     Scanned with ``os.scandir``, whose entries answer "directory or symlink?"
     from the directory read itself: one syscall per directory rather than a
@@ -120,17 +187,18 @@ def _fingerprint(root: Path) -> str:
     try:
         while stack:
             directory, rel_dir = stack.pop()
+            with os.scandir(directory) as scan:
+                entries = [entry for entry in scan if not entry.is_symlink()]
+            excluded = exclude(directory, [entry.name for entry in entries])
             subdirs: list[os.DirEntry[str]] = []
             files: list[os.DirEntry[str]] = []
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    if entry.is_symlink():
-                        continue
-                    if entry.is_dir(follow_symlinks=False):
-                        if entry.name not in _FINGERPRINT_EXCLUDES:
-                            subdirs.append(entry)
-                    else:
-                        files.append(entry)
+            for entry in entries:
+                if entry.name in excluded:
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    subdirs.append(entry)
+                else:
+                    files.append(entry)
             prefix = f"{rel_dir}/" if rel_dir else ""
             for entry in sorted(files, key=lambda e: e.name):
                 with open(entry.path, "rb") as f:
@@ -222,7 +290,18 @@ def _skip_symlinks(directory: str, names: list[str]) -> set[str]:
     return skipped
 
 
-def _replace_tree(src: Path, dest: Path) -> None:
+def _ignored_names(
+    exclude: _SourceExclusions,
+) -> Callable[[str, list[str]], set[str]]:
+    """Return the ``copytree(ignore=...)`` callback for an extension source."""
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        return _skip_symlinks(directory, names) | exclude(directory, names)
+
+    return ignore
+
+
+def _replace_tree(src: Path, dest: Path, exclude: _SourceExclusions) -> None:
     """Replace ``dest`` with a copy of ``src``, leaving it alone if the copy fails."""
     # Copy alongside and swap, so an unreadable source cannot delete the working
     # copy on its way to failing. shutil.Error is an OSError.
@@ -232,7 +311,7 @@ def _replace_tree(src: Path, dest: Path) -> None:
         # Never follow symlinks out of an extension: copytree would otherwise
         # dereference `notes.md -> ~/.ssh/id_rsa` into a real file in the
         # project, where it gets committed (CWE-59).
-        shutil.copytree(src, staged, ignore=_skip_symlinks)
+        shutil.copytree(src, staged, ignore=_ignored_names(exclude))
         if dest.exists():
             shutil.rmtree(dest)
         staged.rename(dest)
@@ -272,11 +351,12 @@ def materialize(
         spec_name = _extension_name_from_dir(sub, ref.selector or sub.name)
         resolved_name = validate_extension_name(name if name is not None else spec_name)
         extension_dir = dest_root / resolved_name
+        exclude = _SourceExclusions(sub, use_gitignore=True)
         # Fingerprinted before the copy, so a source edited while it is being
         # copied leaves the older stamp and the next sync redoes the copy,
         # rather than blessing a tree that is half of each.
-        stamp = _fingerprint(sub)
-        _replace_tree(sub, extension_dir)
+        stamp = _fingerprint(sub, exclude)
+        _replace_tree(sub, extension_dir, exclude)
         _write_stamp(extension_dir, stamp)
         return resolved_name, extension_dir
 
@@ -295,7 +375,7 @@ def materialize(
     )
     resolved_name = validate_extension_name(name if name is not None else spec_name)
     extension_dir = dest_root / resolved_name
-    _replace_tree(sub, extension_dir)
+    _replace_tree(sub, extension_dir, _SourceExclusions(sub, use_gitignore=False))
     _write_stamp(extension_dir, sha)
     return resolved_name, extension_dir
 
@@ -328,11 +408,39 @@ def _checkout(ref: ExtensionRef, sha: str) -> Path:
         ) from e
 
 
+def _clone(repo_dir: Path, url: str, repo: str) -> None:
+    """Clone ``url`` into ``repo_dir``, fetching as little as possible.
+
+    Only the pinned commit is ever checked out, so the default branch's file
+    contents are pure waste: ``--no-checkout`` skips materializing them and
+    ``--filter=blob:none`` skips downloading them, leaving git to fetch blobs
+    lazily for the commit that is actually wanted.
+
+    ``--depth=1`` is deliberately not used. The caller checks out an arbitrary
+    SHA, which a shallow clone can only reach if the server allows
+    ``uploadpack.allowReachableSHA1InWant``, and the existing ``fetch --all``
+    fallback does not unshallow.
+    """
+    base = ["clone", "--quiet", "--no-checkout"]
+    res = _git(*base, "--filter=blob:none", url, str(repo_dir))
+    if res.returncode == 0:
+        return
+
+    # A server that does not set uploadpack.allowFilter needs no handling here:
+    # measured against git 2.51, the client warns ("filtering not recognized by
+    # server, ignoring") and completes a full clone, exit 0. What does fail is a
+    # client older than the flag (git < 2.19), which rejects it as an unknown
+    # option — so retry without it rather than breaking `extension add` outright.
+    logging.debug("Blobless clone of %s failed, retrying in full: %s", repo, res.stderr)
+    shutil.rmtree(repo_dir, ignore_errors=True)
+    res = _git(*base, url, str(repo_dir))
+    if res.returncode != 0:
+        raise ResolverError(f"git clone failed for {repo}: {res.stderr.strip()}")
+
+
 def _checkout_locked(repo_dir: Path, url: str, repo: str, sha: str) -> Path:
     if not (repo_dir / ".git").exists():
-        res = _git("clone", "--quiet", url, str(repo_dir))
-        if res.returncode != 0:
-            raise ResolverError(f"git clone failed for {repo}: {res.stderr.strip()}")
+        _clone(repo_dir, url, repo)
 
     fetch = _git("-C", str(repo_dir), "fetch", "--quiet", "origin", sha)
     # Some hosts reject fetching an arbitrary SHA; fall back to a full fetch.

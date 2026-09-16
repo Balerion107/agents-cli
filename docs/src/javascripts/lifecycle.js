@@ -840,18 +840,18 @@
   //   execute_tool <tool.name>             (per trace_tool_call)
   const TRACE_SPANS = [
     { id: "01", parent: null, name: "invoke_agent orchestrator", start: 0, dur: 5800, attrs: { "gen_ai.conversation.id": "sess_3f0b…", "gen_ai.agent.name": "orchestrator", "gen_ai.operation.name": "invoke_agent" } },
-    { id: "02", parent: "01", name: "generate_content gemini-3.7-flash", start: 30, dur: 320, attrs: { "gen_ai.usage.input_tokens": 220, "gen_ai.usage.output_tokens": 38 } },
+    { id: "02", parent: "01", name: "generate_content gemini-3.8-flash", start: 30, dur: 320, attrs: { "gen_ai.usage.input_tokens": 220, "gen_ai.usage.output_tokens": 38 } },
     { id: "10", parent: "01", name: "invoke_agent investigator", start: 360, dur: 1900, attrs: { "gen_ai.agent.name": "investigator", "gen_ai.operation.name": "invoke_agent" } },
-    { id: "11", parent: "10", name: "generate_content gemini-3.7-flash", start: 380, dur: 220, attrs: { "gen_ai.usage.input_tokens": 320, "gen_ai.usage.output_tokens": 42 } },
+    { id: "11", parent: "10", name: "generate_content gemini-3.8-flash", start: 380, dur: 220, attrs: { "gen_ai.usage.input_tokens": 320, "gen_ai.usage.output_tokens": 42 } },
     { id: "12", parent: "10", name: "execute_tool query_logs", start: 610, dur: 720, attrs: { "gen_ai.tool.name": "query_logs", "gcp.vertex.agent.tool_call_args": '{"service":"api-gateway"}' } },
     { id: "13", parent: "10", name: "execute_tool check_metrics", start: 1340, dur: 540, attrs: { "gen_ai.tool.name": "check_metrics", "gcp.vertex.agent.tool_call_args": '{"service":"auth-service"}' } },
     { id: "20", parent: "01", name: "invoke_agent diagnoser", start: 2280, dur: 1700, attrs: { "gen_ai.agent.name": "diagnoser", "gen_ai.operation.name": "invoke_agent" } },
-    { id: "21", parent: "20", name: "generate_content gemini-3.7-flash", start: 2300, dur: 280, attrs: { "gen_ai.usage.input_tokens": 412, "gen_ai.usage.output_tokens": 64 } },
+    { id: "21", parent: "20", name: "generate_content gemini-3.8-flash", start: 2300, dur: 280, attrs: { "gen_ai.usage.input_tokens": 412, "gen_ai.usage.output_tokens": 64 } },
     { id: "22", parent: "20", name: "execute_tool search_runbook", start: 2590, dur: 1260, attrs: { "gen_ai.tool.name": "search_runbook", "gcp.vertex.agent.tool_call_args": '{"query":"api-gateway 5xx auth-service latency"}' } },
     { id: "30", parent: "01", name: "invoke_agent remediator", start: 4000, dur: 1280, attrs: { "gen_ai.agent.name": "remediator", "gen_ai.operation.name": "invoke_agent" } },
-    { id: "31", parent: "30", name: "generate_content gemini-3.7-flash", start: 4020, dur: 290, attrs: { "gen_ai.usage.input_tokens": 380, "gen_ai.usage.output_tokens": 58 } },
+    { id: "31", parent: "30", name: "generate_content gemini-3.8-flash", start: 4020, dur: 290, attrs: { "gen_ai.usage.input_tokens": 380, "gen_ai.usage.output_tokens": 58 } },
     { id: "32", parent: "30", name: "execute_tool propose_remediation", start: 4320, dur: 580, attrs: { "gen_ai.tool.name": "propose_remediation", "gcp.vertex.agent.tool_call_args": '{"action":"traffic-shift"}' } },
-    { id: "40", parent: "01", name: "generate_content gemini-3.7-flash", start: 5300, dur: 480, attrs: { "gen_ai.usage.input_tokens": 680, "gen_ai.usage.output_tokens": 92 } },
+    { id: "40", parent: "01", name: "generate_content gemini-3.8-flash", start: 5300, dur: 480, attrs: { "gen_ai.usage.input_tokens": 680, "gen_ai.usage.output_tokens": 92 } },
   ];
 
   function initTrace(host) {

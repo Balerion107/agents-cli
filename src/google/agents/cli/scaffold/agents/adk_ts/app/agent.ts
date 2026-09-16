@@ -1,7 +1,7 @@
 import { FunctionTool, LlmAgent } from '@google/adk';
 import { z } from 'zod';
 
-const MODEL = 'gemini-3.7-flash';
+const MODEL = '{{cookiecutter.default_model}}';
 
 /* Mock tool implementation */
 const getWeather = new FunctionTool({
@@ -16,6 +16,10 @@ const getWeather = new FunctionTool({
 });
 
 export const rootAgent = new LlmAgent({
+  // Keep in sync with agents-cli-manifest.yaml: agents-cli derives this name
+  // from the project `name:` recorded there, and telemetry reports it as
+  // gen_ai.agent.name. Renaming the agent only here makes the two disagree,
+  // and anything selecting traces by name stops finding this agent's.
   name: '{{cookiecutter.root_agent_name}}',
   model: MODEL,
   description: 'Tells the current weather in a specified city.',

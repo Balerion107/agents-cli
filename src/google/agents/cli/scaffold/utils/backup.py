@@ -15,47 +15,17 @@
 """Shared backup utility for project directories."""
 
 import datetime
-import fnmatch
 import pathlib
 import shutil
+from collections.abc import Callable
 
 import click
 
 from google.agents.cli._output import Console
 
+from .fs import standard_ignore_patterns
+
 BACKUP_BASE_DIR = pathlib.Path.home() / ".agents-cli" / "backups"
-
-# Directories/files to exclude from backups
-_BACKUP_IGNORE_NAMES = {
-    ".git",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".pytest_cache",
-    "node_modules",
-    ".next",
-    "dist",
-    "build",
-    ".DS_Store",
-    ".vscode",
-    ".idea",
-    "*.egg-info",
-    ".mypy_cache",
-    ".ty",
-    ".coverage",
-    "htmlcov",
-    ".tox",
-    ".cache",
-}
-
-
-def _backup_ignore_patterns(dir: str, files: list[str]) -> list[str]:
-    """Return files to ignore when creating a backup."""
-    return [
-        f
-        for f in files
-        if any(fnmatch.fnmatch(f, pattern) for pattern in _BACKUP_IGNORE_NAMES)
-    ]
 
 
 def create_project_backup(
@@ -91,7 +61,7 @@ def create_project_backup(
 
     try:
         BACKUP_BASE_DIR.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(project_dir, backup_dir, ignore=_backup_ignore_patterns)
+        shutil.copytree(project_dir, backup_dir, ignore=standard_ignore_patterns)
         console.print(f"Backup created: [cyan]{backup_dir}[/cyan]")
         return backup_dir
     except Exception as e:
@@ -100,3 +70,40 @@ def create_project_backup(
             if not click.confirm("Continue without backup?", default=True):
                 raise click.Abort() from e
         return None
+
+
+def make_backup_pre_apply_hook(
+    *,
+    console: Console,
+    auto_approve: bool,
+    interactive: bool,
+) -> Callable[[pathlib.Path], bool]:
+    """Build a ``run_three_way_merge`` pre-apply hook that backs up the project.
+
+    The merge invokes the hook right before it writes changes; returning False
+    aborts the merge. This wraps ``create_project_backup`` so a user cancelling
+    the "continue without backup?" prompt cleanly stops the operation.
+
+    Args:
+        console: Rich console for output.
+        auto_approve: If True, skip confirmation prompts on failure.
+        interactive: If True, prompt the user on backup failure.
+
+    Returns:
+        A hook taking the project directory and returning True to proceed,
+        False if the user cancelled.
+    """
+
+    def _backup(proj_dir: pathlib.Path) -> bool:
+        try:
+            create_project_backup(
+                proj_dir,
+                console=console,
+                auto_approve=auto_approve,
+                interactive=interactive,
+            )
+            return True
+        except click.Abort:
+            return False  # user cancelled
+
+    return _backup

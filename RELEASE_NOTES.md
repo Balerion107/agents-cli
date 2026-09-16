@@ -3,6 +3,38 @@
 All notable changes to this project will be documented in this file.
 
 
+## [1.6.1] - 2026-09-16
+
+- **ADK Go is now available to everyone (Preview).** The `adk_go` template ("Go agent with A2A") now appears in `agents-cli scaffold create` with no experiment override, and Go projects get the toolchain Python already has:
+  - Deploy to Agent Runtime, Cloud Run and GKE, with session methods exposed to `agent_engines.get()` clients.
+  - CloudSQL, Agent Platform and in-memory session services.
+  - Prompts and responses in BigQuery Agent Analytics, and telemetry through OTLP.
+  - CI/CD templates at parity with Python.
+  - The bundled skills cover Go and Python.
+- Scaffolds now default to `gemini-3.8-flash`.
+- Pin `google-adk` below 2.9.0. On 2.9.0 a Cloud Run agent's prompts and responses stopped reaching BigQuery Agent Analytics, leaving `completions_view` empty.
+- `agents-cli scaffold create` no longer asks for a region when the deployment target is `none`.
+- The one-off `agents-cli run` no longer prints stop and resume hints for a server it did not leave running.
+- `agents-cli deploy` prints how to talk to a Cloud Run agent once the deploy finishes.
+- `agents-cli deploy` can change the identity type on an existing agent.
+- `agents-cli deploy` now reports the correct identity after a deploy, instead of the wrong principal for agents using Agent Identity.
+- Exclude vendored extensions from the deploy payload, where they could add megabytes to every deploy.
+- `agents-cli infra single-project` now correctly enables the Service Usage API, so a new project bootstraps without enabling it by hand.
+- Fix remote ADK samples generating two agent directories and an unbuildable project.
+- Scaffolded Dockerfiles install uv from a pinned image instead of `pip install`.
+- `agents-cli run` and `agents-cli eval` no longer stop a background server they only borrowed.
+  - https://github.com/google/agents-cli/issues/71
+- Startup and version notices now go to stderr, so `--json` output stays machine-readable.
+  - https://github.com/google/agents-cli/issues/69
+- `agents-cli eval generate` no longer silently drops per-case session state.
+  - https://github.com/google/agents-cli/issues/52
+- `agents-cli run --mode a2a` now shows status updates, errors and empty turns instead of staying silent.
+- The `run` resume hint includes `--url` and the other routing flags.
+- `agents-cli info --json` reports `root_agent_name`.
+- `agents-cli extension add` no longer copies ignored files from a `local@` source.
+- Fix the macOS-only `sed` in the Starter Pack migration guide and spell out the dry-run and apply steps.
+  - https://github.com/google/agents-cli/issues/78
+
 ## [1.5.0] - 2026-09-01
 
 - **Extension system with a LangChain template.** `agents-cli` can now be extended with custom commands and add-on agent templates, shipped with a LangChain extension and authoring guides. Extensions install from GitHub, other git hosts (including self-hosted and enterprise servers), or a local path for development.

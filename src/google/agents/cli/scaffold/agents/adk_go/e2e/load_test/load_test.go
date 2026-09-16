@@ -109,6 +109,7 @@ type messageSendParams struct {
 }
 
 type a2aMessageWithContext struct {
+	MessageID string    `json:"messageId"`
 	Role      string    `json:"role"`
 	Parts     []a2aPart `json:"parts"`
 	ContextID string    `json:"contextId,omitempty"`
@@ -258,6 +259,7 @@ func runA2AMessage(client *http.Client, baseURL, idToken string, results *LoadTe
 	}
 
 	// Create A2A JSON-RPC request
+	messageID := uuid.New().String()
 	contextID := uuid.New().String()
 	request := jsonRPCRequest{
 		JSONRPC: "2.0",
@@ -265,6 +267,7 @@ func runA2AMessage(client *http.Client, baseURL, idToken string, results *LoadTe
 		ID:      uuid.New().String(),
 		Params: messageSendParams{
 			Message: a2aMessageWithContext{
+				MessageID: messageID,
 				Role:      "user",
 				Parts:     []a2aPart{{Kind: "text", Text: "Hello! Weather in New York?"}},
 				ContextID: contextID,

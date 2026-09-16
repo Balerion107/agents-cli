@@ -22,7 +22,7 @@ if not (os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")):
     os.environ["GOOGLE_CLOUD_LOCATION"] = "global"
     os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
 
-LLM = "gemini-3.7-flash"
+LLM = "gemini-3.8-flash"
 
 llm = ChatGoogleGenerativeAI(model=LLM, temperature=0)
 

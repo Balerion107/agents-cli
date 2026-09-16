@@ -42,10 +42,14 @@ import org.springframework.web.bind.annotation.RestController;
 @ComponentScan(basePackages = "{{cookiecutter.java_package}}")
 public class Agent {
 
-  private static final String MODEL = "gemini-3.7-flash";
+  private static final String MODEL = "{{cookiecutter.default_model}}";
 
   public static final LlmAgent ROOT_AGENT =
       LlmAgent.builder()
+          // Keep in sync with agents-cli-manifest.yaml: agents-cli derives this name
+          // from the project `name:` recorded there, and telemetry reports it as
+          // gen_ai.agent.name. Renaming the agent only here makes the two disagree,
+          // and anything selecting traces by name stops finding this agent's.
           .name("{{cookiecutter.root_agent_name}}")
           .model(MODEL)
           .description("A helpful AI assistant that can provide weather information.")

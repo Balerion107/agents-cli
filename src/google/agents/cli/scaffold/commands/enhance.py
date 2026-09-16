@@ -34,7 +34,8 @@ from google.agents.cli._runner import run_resolved
 from google.agents.cli._tools import ToolNotFoundError, require_tool
 
 from ..utils import remote_template
-from ..utils.backup import create_project_backup
+from ..utils.backup import make_backup_pre_apply_hook
+from ..utils.cli_options import shared_template_options
 from ..utils.generation_metadata import metadata_to_cli_args
 from ..utils.language import (
     find_agent_file,
@@ -46,6 +47,7 @@ from ..utils.logging import display_welcome_banner
 from ..utils.merge import run_three_way_merge
 from ..utils.template import (
     get_available_agents,
+    get_available_base_templates,
     get_deployment_targets,
     load_template_config,
     prompt_cicd_runner_selection,
@@ -53,15 +55,11 @@ from ..utils.template import (
     prompt_session_type_selection,
     resolve_agent_alias,
     validate_agent_directory_name,
+    validate_base_template,
 )
 from ..utils.upgrade import update_acli_metadata
 from ..utils.version import get_current_version
-from .create import (
-    create,
-    get_available_base_templates,
-    shared_template_options,
-    validate_base_template,
-)
+from .create import create
 
 console = Console()
 
@@ -253,7 +251,7 @@ def _execute_with_saved_config(
         # the CLI is installed, regardless of how it was originally launched.
         cmd = [sys.executable, "-m", "google.agents.cli.main", *args]
 
-    logging.debug(f"Executing command: {shlex.join(cmd)}")
+    logging.debug("Executing command: %s", shlex.join(cmd))
 
     # Set env var to prevent infinite loop in nested execution
     env = os.environ.copy()
@@ -741,17 +739,11 @@ def _run_smart_merge(
     new_args = _build_enhance_create_args(project_config, cli_overrides)
 
     # -- Pre-apply hook: back up the project before writing changes ----------
-    def _backup(proj_dir: pathlib.Path) -> bool:
-        try:
-            create_project_backup(
-                proj_dir,
-                console=console,
-                auto_approve=auto_approve,
-                interactive=interactive,
-            )
-            return True
-        except click.Abort:
-            return False  # user cancelled
+    backup_hook = make_backup_pre_apply_hook(
+        console=console,
+        auto_approve=auto_approve,
+        interactive=interactive,
+    )
 
     # -- Post-apply hook: update manifest with new config --------------------
     def _update_metadata(proj_dir: pathlib.Path, lang: str) -> None:
@@ -790,7 +782,7 @@ def _run_smart_merge(
         prefer_new=prefer_new,
         interactive=interactive,
         operation_label="enhancement",
-        pre_apply_hook=_backup,
+        pre_apply_hook=backup_hook,
         post_apply_hook=_update_metadata,
     )
 
@@ -1231,10 +1223,7 @@ def enhance(
                                     detected_agent_directory = pkg
                                     break
                     except Exception as e:
-                        if debug:
-                            console.print(
-                                f"[dim]Could not auto-detect agent directory: {e}[/dim]"
-                            )
+                        logging.debug("Could not auto-detect agent directory: %v", e)
                         pass  # Fall back to default
 
         # Interactive agent directory selection if not provided via CLI and in interactive mode

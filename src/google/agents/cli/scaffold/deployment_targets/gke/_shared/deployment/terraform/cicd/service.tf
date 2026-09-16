@@ -12,14 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Get project information to access the project number
+# Get project information to access the project number.
+# depends_on defers the read to apply time, after bootstrap has enabled Cloud
+# Resource Manager.
 data "google_project" "project" {
   for_each = local.deploy_project_ids
 
   project_id = local.deploy_project_ids[each.key]
+
+  depends_on = [google_project_service.bootstrap]
 }
 
-{%- if cookiecutter.language == "python" %}
 {%- if cookiecutter.session_type == "cloud_sql" %}
 
 # Generate a random password for the database user
@@ -99,7 +102,6 @@ resource "google_secret_manager_secret_version" "db_password" {
   secret_data = random_password.db_password[each.key].result
 }
 
-{%- endif %}
 {%- endif %}
 
 # VPC Network
@@ -309,7 +311,6 @@ resource "kubernetes_pod_disruption_budget_v1" "app_staging" {
   }
 }
 
-{%- if cookiecutter.language == "python" %}
 {%- if cookiecutter.session_type == "cloud_sql" %}
 
 resource "kubernetes_secret_v1" "db_password_staging" {
@@ -323,7 +324,6 @@ resource "kubernetes_secret_v1" "db_password_staging" {
   }
   depends_on = [kubernetes_namespace_v1.app_staging]
 }
-{%- endif %}
 {%- endif %}
 
 resource "kubernetes_deployment_v1" "app_staging" {
@@ -351,6 +351,10 @@ resource "kubernetes_deployment_v1" "app_staging" {
       }
 
       spec {
+        # A streaming request can stay open for minutes; the 30s default would
+        # SIGKILL it mid-response on any rollout or scale-down.
+        termination_grace_period_seconds = 600
+
         service_account_name = kubernetes_service_account_v1.app_staging.metadata[0].name
 
         container {
@@ -372,9 +376,12 @@ resource "kubernetes_deployment_v1" "app_staging" {
             value = "{{cookiecutter.project_name}}"
           }
 
+          # Prompt/response content capture, off by default. Go: set "true" to log
+          # content to OTLP log events for the completions view. Python: content goes
+          # to GCS via the completion hook, so NO_CONTENT.
           env {
             name  = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
-            value = "NO_CONTENT"
+            value = "{% if cookiecutter.language == 'go' %}false{% else %}NO_CONTENT{% endif %}"
           }
 
           env {
@@ -415,7 +422,6 @@ resource "kubernetes_deployment_v1" "app_staging" {
             name  = "GOOGLE_GENAI_USE_VERTEXAI"
             value = "True"
           }
-{%- if cookiecutter.language == "python" %}
 {%- if cookiecutter.session_type == "cloud_sql" %}
           env {
             name  = "INSTANCE_CONNECTION_NAME"
@@ -439,7 +445,7 @@ resource "kubernetes_deployment_v1" "app_staging" {
             value = var.project_name
           }
 {%- endif %}
-{%- if cookiecutter.bq_analytics %}
+{%- if cookiecutter.language == "python" and cookiecutter.bq_analytics %}
           env {
             name  = "BQ_ANALYTICS_DATASET_ID"
             value = google_bigquery_dataset.telemetry_dataset["staging"].dataset_id
@@ -452,7 +458,6 @@ resource "kubernetes_deployment_v1" "app_staging" {
             name  = "BQ_ANALYTICS_CONNECTION_ID"
             value = "${var.region}.${google_bigquery_connection.genai_telemetry_connection["staging"].connection_id}"
           }
-{%- endif %}
 {%- endif %}
 
           resources {
@@ -491,17 +496,31 @@ resource "kubernetes_deployment_v1" "app_staging" {
             period_seconds        = 20
           }
 
-{%- if cookiecutter.language == "python" %}
+          # Hold the pod in Terminating while the EndpointSlice removal reaches
+          # every kube-proxy, so no new request lands on it before SIGTERM.
+          lifecycle {
+            pre_stop {
+              exec {
+{%- if cookiecutter.language == "go" %}
+                # The distroless runtime image has no `sleep` or shell, and the
+                # typed kubernetes provider can't express a native preStop.sleep,
+                # so invoke the app binary's own `sleep` subcommand (see main.go).
+                command = ["/agent", "sleep", "10"]
+{%- else %}
+                command = ["sleep", "10"]
+{%- endif %}
+              }
+            }
+          }
+
 {%- if cookiecutter.session_type == "cloud_sql" %}
           volume_mount {
             name       = "cloudsql"
             mount_path = "/cloudsql"
           }
 {%- endif %}
-{%- endif %}
         }
 
-{%- if cookiecutter.language == "python" %}
 {%- if cookiecutter.session_type == "cloud_sql" %}
         container {
           name  = "cloud-sql-proxy"
@@ -533,7 +552,6 @@ resource "kubernetes_deployment_v1" "app_staging" {
           name = "cloudsql"
           empty_dir {}
         }
-{%- endif %}
 {%- endif %}
       }
     }
@@ -643,7 +661,6 @@ resource "kubernetes_pod_disruption_budget_v1" "app_prod" {
   }
 }
 
-{%- if cookiecutter.language == "python" %}
 {%- if cookiecutter.session_type == "cloud_sql" %}
 
 resource "kubernetes_secret_v1" "db_password_prod" {
@@ -657,7 +674,6 @@ resource "kubernetes_secret_v1" "db_password_prod" {
   }
   depends_on = [kubernetes_namespace_v1.app_prod]
 }
-{%- endif %}
 {%- endif %}
 
 resource "kubernetes_deployment_v1" "app_prod" {
@@ -685,6 +701,10 @@ resource "kubernetes_deployment_v1" "app_prod" {
       }
 
       spec {
+        # A streaming request can stay open for minutes; the 30s default would
+        # SIGKILL it mid-response on any rollout or scale-down.
+        termination_grace_period_seconds = 600
+
         service_account_name = kubernetes_service_account_v1.app_prod.metadata[0].name
 
         container {
@@ -706,9 +726,12 @@ resource "kubernetes_deployment_v1" "app_prod" {
             value = "{{cookiecutter.project_name}}"
           }
 
+          # Prompt/response content capture, off by default. Go: set "true" to log
+          # content to OTLP log events for the completions view. Python: content goes
+          # to GCS via the completion hook, so NO_CONTENT.
           env {
             name  = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
-            value = "NO_CONTENT"
+            value = "{% if cookiecutter.language == 'go' %}false{% else %}NO_CONTENT{% endif %}"
           }
 
           env {
@@ -749,7 +772,6 @@ resource "kubernetes_deployment_v1" "app_prod" {
             name  = "GOOGLE_GENAI_USE_VERTEXAI"
             value = "True"
           }
-{%- if cookiecutter.language == "python" %}
 {%- if cookiecutter.session_type == "cloud_sql" %}
           env {
             name  = "INSTANCE_CONNECTION_NAME"
@@ -773,7 +795,7 @@ resource "kubernetes_deployment_v1" "app_prod" {
             value = var.project_name
           }
 {%- endif %}
-{%- if cookiecutter.bq_analytics %}
+{%- if cookiecutter.language == "python" and cookiecutter.bq_analytics %}
           env {
             name  = "BQ_ANALYTICS_DATASET_ID"
             value = google_bigquery_dataset.telemetry_dataset["prod"].dataset_id
@@ -786,7 +808,6 @@ resource "kubernetes_deployment_v1" "app_prod" {
             name  = "BQ_ANALYTICS_CONNECTION_ID"
             value = "${var.region}.${google_bigquery_connection.genai_telemetry_connection["prod"].connection_id}"
           }
-{%- endif %}
 {%- endif %}
 
           resources {
@@ -825,17 +846,31 @@ resource "kubernetes_deployment_v1" "app_prod" {
             period_seconds        = 20
           }
 
-{%- if cookiecutter.language == "python" %}
+          # Hold the pod in Terminating while the EndpointSlice removal reaches
+          # every kube-proxy, so no new request lands on it before SIGTERM.
+          lifecycle {
+            pre_stop {
+              exec {
+{%- if cookiecutter.language == "go" %}
+                # The distroless runtime image has no `sleep` or shell, and the
+                # typed kubernetes provider can't express a native preStop.sleep,
+                # so invoke the app binary's own `sleep` subcommand (see main.go).
+                command = ["/agent", "sleep", "10"]
+{%- else %}
+                command = ["sleep", "10"]
+{%- endif %}
+              }
+            }
+          }
+
 {%- if cookiecutter.session_type == "cloud_sql" %}
           volume_mount {
             name       = "cloudsql"
             mount_path = "/cloudsql"
           }
 {%- endif %}
-{%- endif %}
         }
 
-{%- if cookiecutter.language == "python" %}
 {%- if cookiecutter.session_type == "cloud_sql" %}
         container {
           name  = "cloud-sql-proxy"
@@ -867,7 +902,6 @@ resource "kubernetes_deployment_v1" "app_prod" {
           name = "cloudsql"
           empty_dir {}
         }
-{%- endif %}
 {%- endif %}
       }
     }

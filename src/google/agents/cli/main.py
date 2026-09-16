@@ -60,7 +60,7 @@ def _print_is_project_moved_tip() -> None:
     if is_project_moved():
         from google.agents.cli._output import Console
 
-        Console().print(message, style="cyan")
+        Console(stderr=True).print(message, style="cyan")
 
 
 class _MainGroup(LazyGroup):
@@ -328,7 +328,7 @@ class _MainGroup(LazyGroup):
         except KeyboardInterrupt:
             from google.agents.cli._output import Console
 
-            console = Console()
+            console = Console(stderr=True)
             console.print(f"\nagents-cli v{__version__}", style="dim")
             console.print("Operation cancelled by user", style="yellow")
             ctx.exit(130)
