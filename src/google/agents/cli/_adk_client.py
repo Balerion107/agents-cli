@@ -17,8 +17,10 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import json
 import logging
+import time
 from collections.abc import (
     AsyncGenerator,
     Iterable,
@@ -35,6 +37,20 @@ _APP_INFO_TIMEOUT = 10
 
 DEFAULT_WS_PATH = "/run_live"
 DEFAULT_TURN_TIMEOUT = 120  # seconds to wait for a turn's turnComplete
+
+# Live sessions where the server keeps working after a turnComplete report it
+# as `interactionStatus`. IN_PROGRESS means more model output is still coming;
+# anything else (IDLE, or its deprecated REQUIRES_ACTION spelling) ends the
+# turn. UNSPECIFIED is the enum's zero value and carries no signal.
+_STATUS_IN_PROGRESS = "IN_PROGRESS"
+_STATUS_UNSPECIFIED = "INTERACTION_STATUS_UNSPECIFIED"
+# An unrecognized status still ends the turn, but gets logged.
+_STATUS_TERMINAL = frozenset({"IDLE", "REQUIRES_ACTION"})
+
+# Fallback for models that don't report interactionStatus: ADK can schedule a
+# NON_BLOCKING tool's response past the terminator, and on the wire that is
+# indistinguishable from a call that is never answered.
+DEFAULT_DEFERRED_RESPONSE_TIMEOUT = 30
 
 # /run_live transcribes it back to text, so output stays gradable.
 DEFAULT_MODALITIES = ("AUDIO",)
@@ -285,12 +301,21 @@ async def _stream_live_events(
                 await ws.send(json.dumps({"content": content}))
 
                 boundary = _TurnBoundary()
+                # Set once a turnComplete arrives with a tool call still open.
+                deferred_deadline: float | None = None
                 while True:
+                    if deferred_deadline is None:
+                        timeout = float(DEFAULT_TURN_TIMEOUT)
+                    else:
+                        timeout = max(0.0, deferred_deadline - time.monotonic())
                     try:
-                        raw = await asyncio.wait_for(
-                            ws.recv(), timeout=DEFAULT_TURN_TIMEOUT
-                        )
+                        raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
                     except TimeoutError:
+                        if deferred_deadline is not None:
+                            # Nothing followed the provisional terminator, so it
+                            # was the real end of the turn. An ordinary ending
+                            # for a fire-and-forget tool -- not a stall.
+                            break
                         logging.warning(
                             "Turn %d: no event for %ds, giving up on the turn.",
                             turn_index,
@@ -312,8 +337,23 @@ async def _stream_live_events(
                     if event is None:
                         continue
                     yield event
-                    if boundary.is_terminal(event):
+
+                    state = boundary.classify(event)
+                    if state is _Boundary.TERMINAL:
                         break
+                    if state is _Boundary.PROVISIONAL:
+                        deferred_deadline = (
+                            time.monotonic() + DEFAULT_DEFERRED_RESPONSE_TIMEOUT
+                        )
+                    elif deferred_deadline is not None:
+                        # Only the answer extends the wait: metadata frames
+                        # routinely follow a turnComplete and would hold it open.
+                        if _event_has_function_response(event):
+                            deferred_deadline = None  # full turn budget again
+                        elif _event_has_answer_content(event):
+                            deferred_deadline = (
+                                time.monotonic() + DEFAULT_DEFERRED_RESPONSE_TIMEOUT
+                            )
 
                 yield None  # end of turn
         finally:
@@ -323,15 +363,27 @@ async def _stream_live_events(
                 pass
 
 
+class _Boundary(enum.Enum):
+    """What one event means for the end of the current logical turn."""
+
+    CONTINUE = "continue"
+    PROVISIONAL = "provisional"
+    TERMINAL = "terminal"
+
+
 class _TurnBoundary:
-    """Detect the terminal turnComplete of one logical live turn."""
+    """Detect the end of one logical live turn.
+
+    Some live models answer one prompt with several turns and report
+    ``interactionStatus``; models that omit it use the heuristic below.
+    """
 
     def __init__(self) -> None:
         self._tool_call_open = False
         self._tool_response_seen = False
 
-    def is_terminal(self, event: dict) -> bool:
-        """Feed one event; return True if it ends the current logical turn."""
+    def classify(self, event: dict) -> _Boundary:
+        """Feed one event; report what it means for the current logical turn."""
         if _event_has_function_call(event):
             # Anything spoken before the call is not the post-tool answer.
             self._tool_call_open = True
@@ -343,14 +395,33 @@ class _TurnBoundary:
             self._tool_call_open = False
             self._tool_response_seen = False
 
-        if event.get("turnComplete"):
-            if self._tool_call_open and self._tool_response_seen:
-                # Terminator for the tool round-trip; keep reading for the answer.
-                self._tool_call_open = False
-                self._tool_response_seen = False
-                return False
-            return True
-        return False
+        if not event.get("turnComplete"):
+            return _Boundary.CONTINUE
+
+        status = str(event.get("interactionStatus") or "").upper()
+        # UNSPECIFIED carries no signal, so it falls through to the heuristic
+        # below rather than being read as an authoritative end of turn.
+        if status and status != _STATUS_UNSPECIFIED:
+            if status == _STATUS_IN_PROGRESS:
+                return _Boundary.CONTINUE
+            if status not in _STATUS_TERMINAL:
+                logging.debug(
+                    "Unrecognized interactionStatus %r; ending the turn.", status
+                )
+            return _Boundary.TERMINAL
+
+        if self._tool_call_open and self._tool_response_seen:
+            # Terminator for the tool round-trip; keep reading for the answer.
+            self._tool_call_open = False
+            self._tool_response_seen = False
+            return _Boundary.CONTINUE
+        if self._tool_call_open:
+            # A terminator while the call is still unanswered. Either the
+            # response was scheduled past it and the answer is still coming,
+            # or the call is never answered and this really is the end. The
+            # two shapes are identical here, so the caller waits it out.
+            return _Boundary.PROVISIONAL
+        return _Boundary.TERMINAL
 
 
 def _decode_ws_frame(raw) -> dict | None:

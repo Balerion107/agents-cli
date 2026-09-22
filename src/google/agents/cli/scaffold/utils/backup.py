@@ -23,6 +23,7 @@ import click
 
 from google.agents.cli._output import Console
 
+from .cli_options import InteractionMode
 from .fs import standard_ignore_patterns
 
 BACKUP_BASE_DIR = pathlib.Path.home() / ".agents-cli" / "backups"
@@ -31,7 +32,6 @@ BACKUP_BASE_DIR = pathlib.Path.home() / ".agents-cli" / "backups"
 def create_project_backup(
     project_dir: pathlib.Path,
     console: Console | None = None,
-    auto_approve: bool = False,
     interactive: bool = False,
 ) -> pathlib.Path | None:
     """Create a backup of the project directory.
@@ -41,7 +41,6 @@ def create_project_backup(
     Args:
         project_dir: Path to the project directory to back up.
         console: Rich console for output. Created if not provided.
-        auto_approve: If True, skip confirmation prompts on failure.
         interactive: If True, show interactive prompt on backup failure.
 
     Returns:
@@ -75,8 +74,7 @@ def create_project_backup(
 def make_backup_pre_apply_hook(
     *,
     console: Console,
-    auto_approve: bool,
-    interactive: bool,
+    mode: InteractionMode,
 ) -> Callable[[pathlib.Path], bool]:
     """Build a ``run_three_way_merge`` pre-apply hook that backs up the project.
 
@@ -86,8 +84,7 @@ def make_backup_pre_apply_hook(
 
     Args:
         console: Rich console for output.
-        auto_approve: If True, skip confirmation prompts on failure.
-        interactive: If True, prompt the user on backup failure.
+        mode: Interaction mode controlling the on-failure backup prompt.
 
     Returns:
         A hook taking the project directory and returning True to proceed,
@@ -99,8 +96,7 @@ def make_backup_pre_apply_hook(
             create_project_backup(
                 proj_dir,
                 console=console,
-                auto_approve=auto_approve,
-                interactive=interactive,
+                interactive=mode.interactive,
             )
             return True
         except click.Abort:

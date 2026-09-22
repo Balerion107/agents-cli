@@ -15,10 +15,20 @@
 """Shared Click options for template-based commands."""
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import click
 
 from . import template
+
+
+@dataclass(frozen=True)
+class InteractionMode:
+    """How a template command may interact with the user during resolution."""
+
+    interactive: bool
+    auto_approve: bool
+    quiet: bool = False
 
 
 def shared_template_options(f: Callable) -> Callable:

@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import logging
 import mimetypes
 import uuid
 from pathlib import Path
@@ -38,7 +37,19 @@ from a2a.utils.constants import (
 )
 from google.protobuf.json_format import MessageToDict
 
-from google.agents.cli._adk_client import create_session, run_sse
+from google.agents.cli._adk_client import (
+    DEFAULT_WS_PATH,
+    create_session,
+    finished_transcript,
+    run_sse,
+    stream_live_events,
+)
+from google.agents.cli._modes import (
+    MODE_A2A,
+    MODE_ADK,
+    MODE_ADK_LIVE,
+    RUN_MODES,
+)
 from google.agents.cli._project import (
     chdir_project_root,
     read_project_config,
@@ -49,9 +60,11 @@ from google.agents.cli._remote import (
     build_remote_headers,
     is_legacy_agent_runtime_url,
     parse_agent_runtime_service_url,
+    resolve_agent_endpoints,
     validate_agent_runtime_url,
 )
 from google.agents.cli.run._local_server import (
+    SERVER_LOG_PATH,
     api_base_path,
     ensure_server,
     stop_server,
@@ -63,6 +76,9 @@ from google.agents.cli.run._multimodal import (
 )
 
 _ARTIFACTS_DIR = Path(".google-agents-cli") / "artifacts"
+
+# Fixed user id so a --session-id from one run resolves on the next.
+_CLI_USER_ID = "cli-user"
 
 
 class _DispatchTarget(NamedTuple):
@@ -90,7 +106,7 @@ def _resolve_dispatch_target(
     app_name: str | None,
     custom_headers: tuple[str, ...],
     *,
-    trace_to_cloud: bool = False,
+    otel_to_cloud: bool = False,
     start_server: bool = False,
 ) -> _DispatchTarget:
     """Resolve where and how to dispatch a query.
@@ -100,12 +116,12 @@ def _resolve_dispatch_target(
     ``app_name`` only when ``--app-name`` was not provided.
 
     Local: starts (or reuses) a background server and points at it.
-    Always uses ADK SSE.
     """
     if url:
         if not mode:
             raise click.UsageError(
-                "--mode is required when using --url. Choose from: a2a, adk"
+                "--mode is required when using --url. "
+                f"Choose from: {', '.join(RUN_MODES)}"
             )
         validate_agent_runtime_url(url)
         if app_name:
@@ -129,7 +145,7 @@ def _resolve_dispatch_target(
         Path.cwd(),
         cfg.agent_directory,
         language=cfg.language,
-        trace_to_cloud=trace_to_cloud,
+        otel_to_cloud=otel_to_cloud,
     )
     if server.started:
         _print_local_server_banner(server.port, server.pid, keep_running=start_server)
@@ -137,7 +153,7 @@ def _resolve_dispatch_target(
     return _DispatchTarget(
         service_url=f"http://127.0.0.1:{server.port}{base_path}",
         headers={},
-        mode="adk",
+        mode=mode or MODE_ADK,
         app_name=app_name or cfg.agent_directory,
         started_server=server.started,
         server_pid=server.pid,
@@ -181,11 +197,11 @@ def _handle_stop_server(ctx: click.Context, _param: click.Parameter, value: bool
 )
 @click.option(
     "--mode",
-    type=click.Choice(["a2a", "adk"], case_sensitive=False),
+    type=click.Choice(RUN_MODES, case_sensitive=False),
     default=None,
     help=(
-        "Protocol for --url queries: 'a2a' or 'adk'. "
-        "Required when using --url. Local runs always use ADK SSE."
+        "Protocol used to talk to the agent: 'a2a', 'adk' (SSE), or 'adk_live' "
+        "(bidi WebSocket). Required with --url; local runs default to 'adk'."
     ),
 )
 @click.option(
@@ -251,13 +267,6 @@ def _handle_stop_server(ctx: click.Context, _param: click.Parameter, value: bool
         "Takes effect when the local server starts; ignored with --url."
     ),
 )
-# TODO: b/533949139
-@click.option(
-    "--trace-to-cloud",
-    is_flag=True,
-    default=False,
-    hidden=True,
-)
 @click.option(
     "--verbose",
     "-v",
@@ -276,7 +285,6 @@ def cmd_run(
     custom_headers: tuple[str, ...],
     start_server: bool,
     otel_to_cloud: bool,
-    trace_to_cloud: bool,
     verbose: bool,
 ):
     """Run the agent with a single prompt (non-interactive).
@@ -296,8 +304,17 @@ def cmd_run(
     --mode to choose the protocol:
 
     \b
-      a2a   A2A protocol
-      adk   ADK SSE (/run_sse, or :streamQuery for Agent Runtime)
+      a2a       A2A protocol
+      adk       ADK SSE (/run_sse, or :streamQuery for Agent Runtime)
+      adk_live  ADK bidi WebSocket (/run_live), for Live and voice agents
+
+    \b
+    Local runs default to adk. Use --mode adk_live to talk to a Live (Voice)
+    agent, locally or against any deployment target:
+
+    \b
+      agents-cli run "What's the weather?" --mode adk_live
+      agents-cli run "..." --mode adk_live --url https://my-live-agent.run.app --app-name app
 
     \b
     Supports --file for multimodal input and --session-id for
@@ -317,14 +334,7 @@ def cmd_run(
             fg="yellow",
             err=True,
         )
-    # TODO: b/533949139
-    if trace_to_cloud:
-        logging.warning(
-            "--trace-to-cloud is deprecated and will be removed in a future "
-            "release. Use --otel-to-cloud instead."
-        )
-    export_otel = otel_to_cloud or trace_to_cloud
-    if url and export_otel:
+    if url and otel_to_cloud:
         click.secho(
             "Warning: --otel-to-cloud has no effect when using --url.",
             fg="yellow",
@@ -336,7 +346,7 @@ def cmd_run(
         mode=mode,
         app_name=app_name,
         custom_headers=custom_headers,
-        trace_to_cloud=export_otel,
+        otel_to_cloud=otel_to_cloud,
         start_server=start_server,
     )
     if url:
@@ -368,6 +378,7 @@ def cmd_run(
             app_name=target.app_name,
             session_id=session_id,
             verbose=verbose,
+            local_server=not url,
             resume_flags=resume_flags,
             keep_server=keep_server,
         )
@@ -402,14 +413,15 @@ def _dispatch_query(
     app_name: str,
     session_id: str | None = None,
     verbose: bool = False,
+    local_server: bool = False,
     resume_flags: str = "",
     keep_server: bool = True,
 ) -> None:
     """Route a query to the right protocol handler.
 
-    Used by both local (``mode='adk'``, localhost ``service_url``,
-    empty ``headers``) and remote (``mode`` from ``--mode``, deployed
-    URL, auth headers) flows so the two paths can't drift.
+    Used by both local (localhost ``service_url``, empty ``headers``) and
+    remote (deployed URL, auth headers) flows so the two paths can't drift.
+    ``mode`` is the resolved ``--mode`` value in both cases.
 
     Modes:
       - ``a2a``: A2A protocol.
@@ -422,8 +434,21 @@ def _dispatch_query(
         canonical location).
       - ``adk``: ADK SSE.  Uses ``:streamQuery`` for legacy Agent Runtime
         URLs, ``/run_sse`` for everything else.
+      - ``adk_live``: ADK's ``/run_live`` WebSocket bidi transport
     """
-    if mode == "a2a":
+    if mode == MODE_ADK_LIVE:
+        _query_adk_live(
+            service_url=service_url,
+            parts=build_adk_sse_parts(message, files),
+            headers=headers,
+            app_name=app_name,
+            session_id=session_id,
+            verbose=verbose,
+            local_server=local_server,
+            resume_flags=resume_flags,
+            keep_server=keep_server,
+        )
+    elif mode == MODE_A2A:
         if is_legacy_agent_runtime_url(service_url):
             location, runtime_resource = parse_agent_runtime_service_url(service_url)
             service_url = build_agent_runtime_passthrough_url(location, runtime_resource)
@@ -444,7 +469,7 @@ def _dispatch_query(
             resume_flags=resume_flags,
             keep_server=keep_server,
         )
-    elif mode == "adk":
+    elif mode == MODE_ADK:
         if is_legacy_agent_runtime_url(service_url):
             _query_legacy_agent_runtime_sse(
                 service_url=service_url,
@@ -566,7 +591,7 @@ def _print_sse_event(
     verbose: bool,
     artifacts: list[str],
 ) -> _SseEventResult:
-    """Process and print a single SSE/NDJSON event.
+    """Process and print a single SSE/NDJSON/Live event.
 
     Returns an :class:`_SseEventResult` carrying the updated ``last_author`` and
     whether the event ``rendered`` anything — so the caller can tell a genuinely
@@ -582,6 +607,13 @@ def _print_sse_event(
         for part in parts:
             if _print_sse_part(part, artifacts):
                 rendered = True
+    else:
+        # Render a finished transcript as text; skip other control frames.
+        transcript = finished_transcript(event)
+        if transcript is not None:
+            last_author = _print_author_tag(transcript.author, last_author)
+            click.echo(transcript.text, nl=False)
+            rendered = True
 
     # ADK reports a failed turn via errorCode/errorMessage (camelCase over HTTP,
     # snake_case elsewhere) rather than content — surface it instead of dropping
@@ -597,6 +629,120 @@ def _print_sse_event(
         click.echo()
         click.secho(json.dumps(event, indent=2), dim=True)
     return _SseEventResult(last_author, rendered)
+
+
+def _create_adk_session(base_url: str, app_name: str, headers: dict) -> str:
+    """Create an ADK session, turning HTTP errors into actionable messages."""
+    try:
+        return create_session(base_url, app_name, _CLI_USER_ID, headers=headers)
+    except requests.HTTPError as exc:
+        response = exc.response
+        status = response.status_code if response is not None else "unknown"
+        body = response.text if response is not None else str(exc)
+        hint = ""
+        if response is not None and response.status_code in (404, 405):
+            hint = "\n  If this is an A2A agent, try --mode a2a instead."
+        raise click.ClickException(
+            f"Failed to create session (HTTP {status}):\n  {body}{hint}"
+        ) from exc
+
+
+def _without_inline_audio(event: dict) -> dict:
+    """Drop inline audio parts, which a spoken reply sends by the hundred.
+
+    Saved as artifacts they bury the transcript in a file per chunk, and
+    ``mimetypes`` has no extension for any PCM spelling ADK uses.
+    """
+    content = event.get("content")
+    if not isinstance(content, dict):
+        return event
+    parts = content.get("parts")
+    if not parts:
+        return event
+    kept = [
+        part
+        for part in parts
+        if not (part.get("inlineData") or {}).get("mimeType", "").startswith("audio/")
+    ]
+    if len(kept) == len(parts):
+        return event
+    return {**event, "content": {**content, "parts": kept}}
+
+
+def _query_adk_live(
+    service_url: str,
+    parts: list[dict],
+    headers: dict,
+    *,
+    app_name: str,
+    session_id: str | None = None,
+    verbose: bool = False,
+    local_server: bool = False,
+    resume_flags: str = "",
+    keep_server: bool = True,
+) -> None:
+    """Create a session and stream one Live (bidi) turn over ``/run_live``."""
+    endpoints = resolve_agent_endpoints(service_url)
+    if not session_id:
+        session_id = _create_adk_session(endpoints.http_base, app_name, headers)
+
+    user_text = " ".join(p.get("text", "") for p in parts if "text" in p).strip()
+    if user_text:
+        click.echo(f"[user]: {user_text}")
+
+    from websockets.exceptions import ConnectionClosedError, InvalidHandshake
+
+    last_author = None
+    artifacts: list[str] = []
+    # Separate from last_author: an author-less content frame prints without
+    # updating it, so it can't gate the "no output" note.
+    rendered = False
+    try:
+        for event in stream_live_events(
+            endpoints.ws_base,
+            app_name,
+            session_id,
+            user_turns=[{"role": "user", "parts": parts}],
+            headers=headers,
+            user_id=_CLI_USER_ID,
+        ):
+            if event is None:
+                continue  # turn boundary; a single turn has just the one
+            event = _without_inline_audio(event)
+            last_author, printed = _print_sse_event(
+                event, last_author, verbose, artifacts
+            )
+            rendered = printed or rendered
+    except ConnectionClosedError as exc:
+        # The close reason carries the real cause
+        close = exc.rcvd
+        code = close.code if close is not None else "unknown"
+        reason = (close.reason if close is not None else "").strip()
+        detail = f" {reason}" if reason else ""
+        # Only our own server writes that log; a --url one logs elsewhere.
+        hint = f"\n  Full traceback in {SERVER_LOG_PATH}." if local_server else ""
+        raise click.ClickException(
+            f"The Live agent closed the stream with an error "
+            f"(WebSocket code {code}):{detail}{hint}"
+        ) from exc
+    except (OSError, InvalidHandshake) as exc:
+        # A rejected handshake (any non-101) is an InvalidHandshake, not an
+        # OSError; a refused connection is the reverse.
+        raise click.ClickException(
+            f"Live WebSocket connection failed: {exc}\n"
+            f"  Endpoint: {endpoints.ws_base}{DEFAULT_WS_PATH}"
+        ) from exc
+
+    click.echo()
+    # A clean turn can render nothing (audio reply, no transcript); say so.
+    if not rendered and not artifacts:
+        click.secho(
+            "Turn completed with no text output. Live agents reply with audio; "
+            "a transcript is shown only when the model emits one.",
+            dim=True,
+        )
+    _print_artifacts(artifacts)
+    _print_session_id(session_id, resume_flags, keep_server=keep_server)
 
 
 def _query_adk_sse(
@@ -617,20 +763,7 @@ def _query_adk_sse(
     renders each event to the terminal as it arrives.
     """
     if not session_id:
-        try:
-            session_id = create_session(
-                service_url, app_name, "cli-user", headers=headers
-            )
-        except requests.HTTPError as exc:
-            response = exc.response
-            status = response.status_code if response is not None else "unknown"
-            body = response.text if response is not None else str(exc)
-            hint = ""
-            if response is not None and response.status_code in (404, 405):
-                hint = "\n  If this is an A2A agent, try --mode a2a instead."
-            raise click.ClickException(
-                f"Failed to create session (HTTP {status}):\n  {body}{hint}"
-            ) from exc
+        session_id = _create_adk_session(service_url, app_name, headers)
 
     # Print user message (text part only for display)
     user_text = " ".join(p.get("text", "") for p in parts if "text" in p).strip()
@@ -648,7 +781,7 @@ def _query_adk_sse(
             session_id,
             user_message=user_message,
             headers=headers,
-            user_id="cli-user",
+            user_id=_CLI_USER_ID,
         ):
             last_author, rendered = _print_sse_event(
                 event, last_author, verbose, artifacts
@@ -688,7 +821,7 @@ def _query_adk_sse(
 
 
 def _create_agent_runtime_session(
-    service_url: str, headers: dict, user_id: str = "cli-user"
+    service_url: str, headers: dict, user_id: str = _CLI_USER_ID
 ) -> str:
     resp = requests.post(
         f"{service_url}:query",
@@ -732,7 +865,7 @@ def _query_legacy_agent_runtime_sse(
     stream_url = f"{service_url}:streamQuery"
 
     input_payload: dict = {
-        "user_id": "cli-user",
+        "user_id": _CLI_USER_ID,
         "session_id": session_id,
         "message": message,
     }
@@ -954,6 +1087,12 @@ def _print_sse_part(part: dict, artifacts: list[str]) -> bool:
     ``artifacts``. Returns True if it rendered something."""
     text = part.get("text")
     if text:
+        if part.get("thought"):
+            # Extended-thinking models narrate their reasoning as ordinary text
+            # parts, so unlabelled it reads as the answer -- and runs together
+            # with the answer that follows it.
+            click.secho(f"\n[thinking] {text}\n", dim=True, nl=False)
+            return True
         click.echo(text, nl=False)
         return True
     inline_data = part.get("inlineData")

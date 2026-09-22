@@ -15,7 +15,7 @@ description: >
 metadata:
   author: Google
   license: Apache-2.0
-  version: 1.6.1
+  version: 1.7.0
   requires:
     bins:
       - agents-cli
@@ -31,6 +31,7 @@ metadata:
 1. **Agent must be deployed** — the agent must be running and reachable
 2. **Gemini Enterprise app must exist** — Create one in Google Cloud Console → Gemini Enterprise → Apps before registering
 3. **`deployment_metadata.json`** (Agent Runtime only) — Created automatically by `agents-cli deploy`; contains the agent runtime ID, deployment target, the A2A flag, and the agent directory
+4. **Text-based agent** — Live/voice (bidi) agents are **not supported** by Gemini Enterprise, which has no `/run_live` transport. Register a text-based agent instead.
 
 ## Required Permissions for A2A on Cloud Run
 
@@ -202,7 +203,7 @@ Docs: https://docs.cloud.google.com/agent-registry/manage-agents · https://docs
 | Re-publishing the same agent | Registration is idempotent — re-running updates the existing registration in place instead of creating a duplicate |
 | HTTP 403 on registration | Check that your account has Discovery Engine Editor permissions on the Gemini Enterprise project |
 | Debugging ADK invocation failures on Agent Runtime | Gemini Enterprise calls the agent via the `AdkApp`'s `streaming_agent_run_with_events` method (the native `:streamQuery` contract). Grep the runtime's `reasoning_engine_stderr` logs for `streaming_agent_run_with_events` to find the underlying error |
-| "Could not fetch agent card" | Verify the agent is running and the URL is correct; for Cloud Run, ensure `gcloud auth login` is done |
+| "Could not fetch agent card" | Verify the agent is running and the URL is correct; for Cloud Run, ensure `gcloud auth login` is done. A Live/voice agent drops its A2A card and cannot be published — Gemini Enterprise does not support Live agents |
 
 ---
 

@@ -29,7 +29,13 @@ from agentplatform._genai.types import common
 from agentplatform._genai.types import evals as evals_types
 from google.genai import types as genai_types
 
-from google.agents.cli._adk_client import create_session, fetch_app_info, run_sse
+from google.agents.cli._adk_client import (
+    DEFAULT_WS_PATH,
+    create_session,
+    fetch_app_info,
+    run_sse,
+)
+from google.agents.cli._modes import MODE_ADK, MODE_ADK_LIVE
 from google.agents.cli._output import Console
 from google.agents.cli._project import (
     ProjectConfig,
@@ -37,8 +43,15 @@ from google.agents.cli._project import (
     read_project_config,
     require_agent_directory,
 )
-from google.agents.cli._remote import build_remote_headers
-from google.agents.cli.eval import _paths
+from google.agents.cli._remote import build_remote_headers, resolve_agent_endpoints
+from google.agents.cli.eval import _live, _paths
+from google.agents.cli.eval._events import (
+    final_response_content_from_events,
+    parse_content_event,
+    rewrite_model_author_events,
+    strip_thought_signatures,
+    to_adk_event_payload,
+)
 from google.agents.cli.run._local_server import ensure_server, stop_server
 
 _DEFAULT_CONCURRENCY = min(32, (os.cpu_count() or 4))
@@ -49,46 +62,6 @@ _DEFAULT_APP_NAME = "app"
 # Fallback root-agent name for the rewrite_model_author_events rewrite
 # when /app-info is unavailable.
 _FALLBACK_ROOT_AGENT_NAME = "root_agent"
-
-
-def strip_thought_signatures(events: list[evals_types.AgentEvent]) -> None:
-    """Remove thought_signature from every event's content parts."""
-    for event in events:
-        if event.content and event.content.parts:
-            for part in event.content.parts:
-                part.thought_signature = None
-
-
-def rewrite_model_author_events(case: common.EvalCase, root_agent_name: str) -> None:
-    """Rewrite events with author=='model' to use root_agent_name."""
-    if not case.agent_data:
-        return
-    for turn in case.agent_data.turns or []:
-        for event in turn.events or []:
-            if event.author == "model":
-                event.author = root_agent_name
-
-
-def final_response_content_from_events(
-    events: list[evals_types.AgentEvent],
-) -> genai_types.Content | None:
-    """Extract the final agent text response from a list of events.
-
-    Walks events in reverse looking for the most recent event whose first
-    text-bearing part has a non-empty text. Returns a Content
-    ({"role": "model", "parts": [{"text": ...}]}) suitable for
-    EvalCase.responses[i].response, or None if no text was found.
-    """
-    for event in reversed(events):
-        if not event.content or not event.content.parts:
-            continue
-        texts = [p.text for p in event.content.parts if p.text]
-        if texts:
-            return genai_types.Content(
-                role=event.content.role or "model",
-                parts=[genai_types.Part(text="".join(texts))],
-            )
-    return None
 
 
 def split_case_history(
@@ -127,21 +100,6 @@ def split_case_history(
     if last.state_delta:
         prior_events.append(last.model_copy(update={"content": None}))
     return prior_events, last.content
-
-
-def _to_adk_event_payload(event: evals_types.AgentEvent) -> dict:
-    """Serialize a seeded prior event into ADK's ``Event`` wire shape.
-
-    ADK reads a state delta from ``actions.state_delta`` and ignores unknown
-    top-level fields, so an unnested delta leaves the case graded against an
-    agent that never saw the state. JSON mode because ``event_time`` is a
-    ``datetime`` and ``requests`` cannot encode it.
-    """
-    payload = event.model_dump(exclude_none=True, by_alias=True, mode="json")
-    state_delta = payload.pop("stateDelta", None)
-    if state_delta:
-        payload["actions"] = {"stateDelta": state_delta}
-    return payload
 
 
 def merge_events_into_case(
@@ -197,46 +155,6 @@ def merge_events_into_case(
     return merged
 
 
-def _parse_sse_event(event: dict) -> evals_types.AgentEvent | None:
-    """Parse a ``/run_sse`` event into an ``AgentEvent``, or raise ``ValueError``.
-
-    Raises an exception when the event is unusable:
-
-    * it signals a failure -- event carrying ``errorCode`` / ``errorMessage``
-      or a bare top-level ``{"error": ...}`` (the final frame ADK emits before
-      closing the stream on a failed run); or
-    * it is missing ``author``.
-
-    ``AgentEvent`` construction may also raise ``ValueError`` for
-    otherwise-malformed content.
-
-    Returns None for events that contain neither content nor state delta (e.g.
-    events that record artifact deltas fall into that category).
-    """
-    message = event.get("errorMessage") or event.get("error")
-    code = event.get("errorCode")
-    if message or code:
-        detail = message or "unknown error"
-        raise Exception(
-            f"Agent returned an error: {detail}" + (f" ({code})" if code else "")
-        )
-
-    if not event.get("author"):
-        raise ValueError("Malformed agent event: missing author.")
-
-    content = event.get("content")
-    state_delta = event.get("actions", {}).get("stateDelta")
-    if not content and not state_delta:
-        return None
-
-    return evals_types.AgentEvent(
-        author=event.get("author"),
-        content=content or None,
-        event_time=event.get("timestamp") or None,
-        state_delta=state_delta or None,
-    )
-
-
 def run_case(
     *,
     case: common.EvalCase,
@@ -246,13 +164,27 @@ def run_case(
     root_agent_name: str,
     agents_map: dict[str, evals_types.AgentConfig],
     user_id: str = "eval-cli-user",
+    live: bool,
 ) -> tuple[common.EvalCase, str | None]:
-    """Run one eval case against a live ADK server over HTTP.
+    """Run one eval case against a running ADK server.
 
     Returns (merged_case, None) on success, (original_case, error_msg)
     on any failure. Callers record failures without aborting the whole run.
     """
     rewrite_model_author_events(case, root_agent_name)
+
+    if live:
+        return _live.run_case_live(
+            case=case,
+            base_url=base_url,
+            app_name=app_name,
+            headers=headers,
+            root_agent_name=root_agent_name,
+            agents_map=agents_map,
+            user_id=user_id,
+        )
+
+    # ---- Default transport: POST /run_sse ----
     try:
         prior_events, user_message = split_case_history(case)
     except Exception as exc:
@@ -264,7 +196,7 @@ def run_case(
             app_name,
             user_id,
             headers=headers,
-            prior_events=[_to_adk_event_payload(e) for e in prior_events] or None,
+            prior_events=[to_adk_event_payload(e) for e in prior_events] or None,
         )
     except Exception as exc:
         return case, f"Session create failed: {type(exc).__name__}: {exc}"
@@ -290,7 +222,7 @@ def run_case(
 
     try:
         new_events = [
-            event for event in map(_parse_sse_event, raw_events) if event is not None
+            event for event in map(parse_content_event, raw_events) if event is not None
         ]
     except Exception as exc:
         return case, str(exc)
@@ -345,14 +277,15 @@ def _resolve_agents_metadata(url: str, app_name: str, headers: dict) -> tuple[st
 def _dispatch_cases(
     *,
     eval_cases: list[common.EvalCase],
-    url: str,
+    base_url: str,
     app_name: str,
     headers: dict,
     root_agent_name: str,
     agents_map: dict[str, evals_types.AgentConfig],
     concurrency: int,
+    live: bool,
 ) -> tuple[list[common.EvalCase], list[tuple[int, str]]]:
-    """Run all eval_cases over HTTP in parallel.
+    """Run all eval_cases in parallel over the selected transport.
 
     Returns (merged_successes, failures) where merged_successes preserves
     input ordering (blanks removed) and failures is a list of
@@ -367,11 +300,12 @@ def _dispatch_cases(
     ) -> tuple[int, common.EvalCase, str | None]:
         merged_case, err = run_case(
             case=case,
-            base_url=url,
+            base_url=base_url,
             app_name=app_name,
             headers=headers,
             root_agent_name=root_agent_name,
             agents_map=agents_map,
+            live=live,
         )
         return index, merged_case, err
 
@@ -399,17 +333,18 @@ def _dispatch_cases(
     return [c for c in merged if c is not None], failures
 
 
-def _run_http(
+def _run_cases(
     *,
     console: Console,
-    url: str,
+    base_url: str,
     app_name: str,
     eval_cases: list[dict],
     output_path: Path,
     concurrency: int,
     custom_headers: tuple[str, ...],
+    live: bool,
 ) -> None:
-    """Run inference over HTTP against a running ADK server.
+    """Run inference against a running ADK server.
 
     Failure contract:
       * all cases succeed -> write artifact, exit 0.
@@ -418,9 +353,15 @@ def _run_http(
       * zero cases succeed -> do not write any artifact, print a failure
         summary to stderr, exit 1.
     """
-    headers = build_remote_headers(custom_headers, url)
-    root_agent_name, agents_map = _resolve_agents_metadata(url, app_name, headers)
+    headers = build_remote_headers(custom_headers, base_url)
+    root_agent_name, agents_map = _resolve_agents_metadata(base_url, app_name, headers)
     console.print(f"[dim]Discovered root_agent_name={root_agent_name}[/dim]")
+    if live:
+        console.print(
+            f"[dim]Transport: Live WebSocket "
+            f"({resolve_agent_endpoints(base_url).ws_base}{DEFAULT_WS_PATH}, "
+            f"text in, audio + transcript out)[/dim]"
+        )
 
     try:
         typed_cases = [common.EvalCase.model_validate(c) for c in eval_cases]
@@ -429,14 +370,24 @@ def _run_http(
             f"Dataset contains a malformed eval case: {type(exc).__name__}: {exc}"
         ) from exc
 
+    # Once for the dataset: run_case_live runs per case, on worker threads.
+    if live and any(_live.has_authored_agent_turns(c) for c in typed_cases):
+        logging.warning(
+            "Live eval ignores pre-authored agent replies: the agent generates "
+            "every turn over the live session, and they are not seeded as "
+            "history. Author user-only turns for live datasets "
+            "(see /google-agents-cli-eval)."
+        )
+
     successes, failures = _dispatch_cases(
         eval_cases=typed_cases,
-        url=url,
+        base_url=base_url,
         app_name=app_name,
         headers=headers,
         root_agent_name=root_agent_name,
         agents_map=agents_map,
         concurrency=concurrency,
+        live=live,
     )
 
     n_cases = len(eval_cases)
@@ -518,10 +469,18 @@ def _print_failure_summary(
     help=(
         "URL of a running ADK agent to run inference against, e.g. a "
         "deployed Cloud Run / GKE URL or a locally-running server. When "
-        "omitted, agents-cli runs the agent in a local HTTP server. In both "
-        "cases each evaluation case is sent to the server over HTTP (POST "
-        "/apps/{app}/users/{user}/sessions + POST /run_sse). Eval cases run "
-        "in parallel."
+        "omitted, agents-cli runs the agent in a local server. Eval "
+        "cases run in parallel."
+    ),
+)
+@click.option(
+    "--mode",
+    type=click.Choice([MODE_ADK, MODE_ADK_LIVE], case_sensitive=False),
+    default=MODE_ADK,
+    show_default=True,
+    help=(
+        "Protocol used to run each case: 'adk' or 'adk_live'. "
+        "Works locally and with --url."
     ),
 )
 @click.option(
@@ -539,9 +498,9 @@ def _print_failure_summary(
     default=_DEFAULT_CONCURRENCY,
     show_default="number of CPU cores",
     help=(
-        "Number of eval cases dispatched in parallel over HTTP. Each case "
-        "runs in its own session. Defaults to min(32, number of CPU cores),"
-        "falling back to 4 if that cannot be determined."
+        "Number of eval cases dispatched in parallel. Each case runs in its "
+        "own session. Defaults to min(32, number of CPU cores), falling back "
+        "to 4 if that cannot be determined."
     ),
 )
 @click.option(
@@ -558,6 +517,7 @@ def cmd_generate(
     dataset: str | None,
     output: str | None,
     url: str | None,
+    mode: str,
     app_name: str,
     concurrency: int,
     custom_headers: tuple[str, ...],
@@ -577,12 +537,19 @@ def cmd_generate(
     By default, tries to run the agent in a local HTTP server (project's `fast_api_app.py` if it exists, or `adk api_server`).
     Pass `--url` to run against an already-running or deployed agent instead.
 
+    For Live (bidi) agents, pass `--mode adk_live` to run each case over ADK's
+    `/run_live` WebSocket. Author user-only turns: the agent generates every
+    reply. See `/google-agents-cli-eval` for details.
+
     \b
     Example:
       agents-cli eval generate --dataset eval_cases.json --output artifacts/traces/
       agents-cli eval generate --url https://my-agent.run.app --app-name app
+      agents-cli eval generate --mode adk_live
+      agents-cli eval generate --mode adk_live --url https://my-live-agent.run.app --app-name app
     """
     console = Console()
+    live = mode == MODE_ADK_LIVE
     project_root = find_project_root()
     if not project_root:
         raise click.ClickException(
@@ -645,6 +612,7 @@ def cmd_generate(
             output_path=output_path,
             concurrency=concurrency,
             custom_headers=custom_headers,
+            live=live,
         )
     else:
         _run_against_local_server(
@@ -656,6 +624,7 @@ def cmd_generate(
             output_path=output_path,
             concurrency=concurrency,
             custom_headers=custom_headers,
+            live=live,
         )
 
 
@@ -669,17 +638,19 @@ def _run_against_remote_server(
     output_path: Path,
     concurrency: int,
     custom_headers: tuple[str, ...],
+    live: bool,
 ) -> None:
     console.print(f"[bold]Target:[/bold] [cyan]{url}[/cyan]")
     console.print(f"[bold]Running inference on dataset:[/bold] [cyan]{dataset}[/cyan]")
-    _run_http(
+    _run_cases(
         console=console,
-        url=url,
+        base_url=resolve_agent_endpoints(url).http_base,
         app_name=app_name,
         eval_cases=eval_cases,
         output_path=output_path,
         concurrency=concurrency,
         custom_headers=custom_headers,
+        live=live,
     )
 
 
@@ -693,6 +664,7 @@ def _run_against_local_server(
     output_path: Path,
     concurrency: int,
     custom_headers: tuple[str, ...],
+    live: bool,
 ) -> None:
     """Run inference against a local ADK server booted for this command."""
     local_app_name = cfg.agent_directory
@@ -707,14 +679,15 @@ def _run_against_local_server(
     local_url = f"http://127.0.0.1:{server_info.port}"
     try:
         console.print(f"[dim]Server ready at {local_url}[/dim]")
-        _run_http(
+        _run_cases(
             console=console,
-            url=local_url,
+            base_url=resolve_agent_endpoints(local_url).http_base,
             app_name=local_app_name,
             eval_cases=eval_cases,
             output_path=output_path,
             concurrency=concurrency,
             custom_headers=custom_headers,
+            live=live,
         )
     finally:
         if server_info.started:

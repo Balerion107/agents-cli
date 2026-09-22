@@ -532,8 +532,9 @@ def get_agent_runtime_metadata(agent_runtime_id: str) -> tuple[str | None, str |
         client = AgentPlatformClient(project=project_id, location=location)
         agent_runtime = client.agent_engines.get(name=agent_runtime_id)
 
-        display_name = getattr(agent_runtime.api_resource, "display_name", None)
-        description = getattr(agent_runtime.api_resource, "description", None)
+        api_resource = agent_runtime.api_resource
+        display_name = api_resource.display_name if api_resource else None
+        description = api_resource.description if api_resource else None
 
         return display_name, description
     except Exception as e:

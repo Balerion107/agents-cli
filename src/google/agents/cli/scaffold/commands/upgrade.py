@@ -24,6 +24,7 @@ from google.agents.cli._output import Console
 from google.agents.cli._project import find_project_config, find_project_root
 
 from ..utils.backup import make_backup_pre_apply_hook
+from ..utils.cli_options import InteractionMode
 from ..utils.generation_metadata import metadata_to_cli_args
 from ..utils.merge import run_three_way_merge
 from ..utils.upgrade import (
@@ -146,11 +147,12 @@ def upgrade(
     agent_directory = metadata.agent_directory or "app"
     cli_args = metadata_to_cli_args(metadata)
 
+    mode = InteractionMode(interactive=interactive, auto_approve=auto_approve)
+
     # -- Pre-apply hook: back up the project before writing changes ----------
     backup_hook = make_backup_pre_apply_hook(
         console=console,
-        auto_approve=auto_approve,
-        interactive=interactive,
+        mode=mode,
     )
 
     # Post-apply: stamp the new version into the manifest
@@ -170,9 +172,8 @@ def upgrade(
         old_args=cli_args,
         new_args=cli_args,
         old_version=old_version,
-        auto_approve=auto_approve,
+        mode=mode,
         dry_run=dry_run,
-        interactive=interactive,
         operation_label="upgrade",
         pre_apply_hook=backup_hook,
         post_apply_hook=_update_version,

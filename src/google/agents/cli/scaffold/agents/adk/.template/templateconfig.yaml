@@ -25,7 +25,7 @@ settings:
     # longer matches. 2.8.0 is verified good. Agent Runtime is unaffected (it
     # exports via container stdout, not in-process).
     # TODO: lift the cap once the ADK-side fix lands.
-    - "google-adk[gcp,otel-gcp,bigquery-analytics]>=2.7.0,<2.9.0"
+    - "google-adk[gcp,otel-gcp,bigquery-analytics]>=2.8.0,<2.9.0"
     # opentelemetry-resourcedetector-gcp 1.13.0 (its only non-prerelease) is yanked
     # ("breaks imports"). ADK caps gcp-logging at <=1.12.0a0 but leaves
     # resourcedetector at <2, so the resolver reaches the broken build (or fails
@@ -45,7 +45,7 @@ settings:
   extra_optional_dependencies:
     eval:
       # Keep in lockstep with the cap on the main google-adk pin above.
-      - "google-adk[eval]>=2.7.0,<2.9.0"
+      - "google-adk[eval]>=2.8.0,<2.9.0"
   tags: ["adk", "a2a"]
   frontend_type: "None"
 

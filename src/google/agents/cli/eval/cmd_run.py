@@ -20,6 +20,7 @@ from pathlib import Path
 
 import click
 
+from google.agents.cli._modes import MODE_ADK, MODE_ADK_LIVE
 from google.agents.cli._output import Console
 from google.agents.cli._project import find_project_root
 from google.agents.cli.eval import _paths
@@ -93,6 +94,16 @@ from google.agents.cli.eval.cmd_grade import cmd_grade, qps_option
     ),
 )
 @click.option(
+    "--mode",
+    type=click.Choice([MODE_ADK, MODE_ADK_LIVE], case_sensitive=False),
+    default=MODE_ADK,
+    show_default=True,
+    help=(
+        "Protocol used to evaluate the agent: 'adk' or 'adk_live'. "
+        "Forwarded to `eval generate`."
+    ),
+)
+@click.option(
     "--app-name",
     default=_DEFAULT_APP_NAME,
     help=(
@@ -126,6 +137,7 @@ def cmd_run(
     project: str | None,
     region: str | None,
     url: str | None,
+    mode: str,
     app_name: str,
     concurrency: int,
     custom_headers: tuple[str, ...],
@@ -199,6 +211,7 @@ def cmd_run(
             dataset=dataset,
             output=traces_file,
             url=url,
+            mode=mode,
             app_name=app_name,
             concurrency=concurrency,
             custom_headers=custom_headers,

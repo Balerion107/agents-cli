@@ -3,6 +3,25 @@
 All notable changes to this project will be documented in this file.
 
 
+## [1.7.0] - 2026-09-22
+
+- **Live (voice) agents now work in `run` and `eval`.** Pass `--mode adk_live` wherever you already pass `--mode adk`:
+  - `agents-cli run --mode adk_live` sends a prompt over ADK's `/run_live` WebSocket, against a local server or any deployment target. A turn that answers only in audio says so instead of printing nothing.
+  - `agents-cli eval generate` and `agents-cli eval run` play each case over one persistent Live socket, with the same dataset format, trace output and grading as the SSE path.
+  - The `gemini-3.8-live` models answer one prompt with several model turns. The CLI reads the end of a turn from `interactionStatus` instead of stopping at the first `turnComplete`.
+  - The bundled skills cover Live: an ADK Live reference, which models support it, and how to deploy a voice agent.
+- `agents-cli run --mode a2a` talks A2A to the local server. A local run used to ignore `--mode` and always use ADK SSE.
+- `agents-cli deploy --ingress` sets Cloud Run ingress to `all`, `internal` or `internal-and-cloud-load-balancing`, so a deploy works in a project where `constraints/run.allowedIngress` rejects a public service.
+  - https://github.com/google/agents-cli/issues/87
+- `agents-cli deploy` updates the Agent Runtime engine whose resource id is recorded in `deployment_metadata.json`, and scans display names only when no id is recorded. A deleted engine, a display name that no longer matches, or a scan that finds duplicates stops the deploy instead of mutating the wrong engine.
+  - https://github.com/google/agents-cli/issues/75
+- `agents-cli deploy` and scaffolded Terraform both set `identity_type = SERVICE_ACCOUNT` on the Agent Runtime engine, so an agent keeps its service account when Agent Runtime changes that default to Agent Identity.
+- `agents-cli scaffold create --agent <remote URL>` handles symlinks again. Since 1.4.1 every symlink in a remote template was dropped, so a template that shared a library across variants scaffolded a project that failed at import. Links inside the cloned repo are copied as real file contents, and a link pointing outside it stops the scaffold with an error.
+  - https://github.com/google/agents-cli/issues/89
+- The generated Cloud SQL password no longer lands in Terraform state. State lives in `gs://{cicd_project}-terraform-state`, whose default IAM let anyone with Viewer on the CI/CD project read the prod database password. Generated Terraform now needs Terraform 1.11.0 or later.
+- Scaffolded projects need `google-adk>=2.8.0`. 2.7.x does not emit `interactionStatus`, so a Live turn boundary falls back to a heuristic there. The `<2.9.0` cap from 1.6.1 is unchanged.
+- The deprecated `--trace-to-cloud` alias is gone from `agents-cli playground` and `agents-cli run`. Use `--otel-to-cloud`.
+
 ## [1.6.1] - 2026-09-16
 
 - **ADK Go is now available to everyone (Preview).** The `adk_go` template ("Go agent with A2A") now appears in `agents-cli scaffold create` with no experiment override, and Go projects get the toolchain Python already has:

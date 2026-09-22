@@ -32,6 +32,7 @@ from rich.prompt import Prompt
 
 from google.agents.cli._output import Console
 
+from .cli_options import InteractionMode
 from .upgrade import (
     MERGE_DEPENDENCY_HANDLERS,
     WRITE_DEPENDENCY_HANDLERS,
@@ -481,10 +482,9 @@ def run_three_way_merge(
     old_args: list[str],
     new_args: list[str],
     old_version: str | None = None,
-    auto_approve: bool,
+    mode: InteractionMode,
     dry_run: bool,
     prefer_new: bool = False,
-    interactive: bool = False,
     operation_label: str = "upgrade",
     pre_apply_hook: Callable[[pathlib.Path], bool] | None = None,
     post_apply_hook: Callable[[pathlib.Path, str], None] | None = None,
@@ -503,10 +503,10 @@ def run_three_way_merge(
         new_args: CLI args for re-creating the *new* template snapshot.
         old_version: If set, passed to ``run_create_command`` for the old
             template (used by *upgrade* to re-template at a prior version).
-        auto_approve: Auto-apply non-conflicting changes without prompts.
+        mode: Interaction mode; ``interactive`` gates the confirm and
+            conflict-resolution prompts, ``auto_approve`` the silent path.
         dry_run: Preview changes without writing anything.
         prefer_new: Resolve conflicts in favour of the new template.
-        interactive: Allow interactive conflict-resolution prompts.
         operation_label: Human-readable verb for prompt/log text
             (``"upgrade"`` or ``"enhancement"``).
         pre_apply_hook: Optional callback invoked *before* files are
@@ -615,7 +615,7 @@ def run_three_way_merge(
             return True
 
         # ── Confirm ──────────────────────────────────────────────────
-        if interactive and not dry_run:
+        if mode.interactive and not dry_run:
             prompt_text = f"\nProceed with {operation_label}?"
             if groups["conflict"]:
                 prompt_text = "\nProceed? (you'll resolve conflicts next)"
@@ -641,10 +641,10 @@ def run_three_way_merge(
             groups=groups,
             project_dir=project_dir,
             new_template_dir=new_template_project,
-            auto_approve=auto_approve,
+            auto_approve=mode.auto_approve,
             dry_run=dry_run,
             prefer_new=prefer_new,
-            interactive=interactive,
+            interactive=mode.interactive,
         )
 
         write_dependencies = WRITE_DEPENDENCY_HANDLERS.get(language)

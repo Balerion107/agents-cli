@@ -23,7 +23,7 @@ import sys
 import tempfile
 import tomllib
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 import click
 
@@ -38,6 +38,20 @@ class RemoteTemplateSpec:
     template_path: str
     git_ref: str
     is_adk_samples: bool = False
+
+
+class FetchedTemplate(NamedTuple):
+    """Result of fetching a remote template.
+
+    Attributes:
+        template_dir: Path to the fetched template directory.
+        temp_dir: Top-level temporary directory that should be cleaned up.
+        repo_root: Root of the cloned repository.
+    """
+
+    template_dir: pathlib.Path
+    temp_dir: pathlib.Path
+    repo_root: pathlib.Path
 
 
 def is_template_spec(value: str) -> bool:
@@ -167,7 +181,7 @@ def fetch_remote_template(
     original_agent_spec: str | None = None,
     locked: bool = False,
     project_name: str | None = None,
-) -> tuple[pathlib.Path, pathlib.Path]:
+) -> FetchedTemplate:
     """Fetch remote template and return path to template directory.
 
     Uses Git to clone the remote repository. If the template contains a uv.lock
@@ -180,9 +194,8 @@ def fetch_remote_template(
         project_name: Project name (may have been entered interactively)
 
     Returns:
-        A tuple containing:
-        - Path to the fetched template directory.
-        - Path to the top-level temporary directory that should be cleaned up.
+        A ``FetchedTemplate`` with the fetched template directory, the top-level
+        temporary directory to clean up, and the cloned repository root.
     """
     temp_dir = tempfile.mkdtemp(prefix="acli_remote_template_")
     temp_path = pathlib.Path(temp_dir)
@@ -279,7 +292,9 @@ def fetch_remote_template(
             # Exit with success since the nested command will handle the rest
             sys.exit(0)
 
-        return template_dir, temp_path
+        return FetchedTemplate(
+            template_dir=template_dir, temp_dir=temp_path, repo_root=repo_path
+        )
     except Exception as e:
         # Clean up on error
         shutil.rmtree(temp_path, ignore_errors=True)

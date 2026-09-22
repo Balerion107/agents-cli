@@ -28,6 +28,10 @@ from typing import Any
 import click
 import yaml
 
+# Fallback for manifests written before the framework key existed. Those are all
+# ADK; new projects get the value from their template.
+DEFAULT_FRAMEWORK = "google-adk"
+
 
 @dataclass
 class ProjectConfig:
@@ -41,6 +45,7 @@ class ProjectConfig:
     base_template: str = "adk"
     acli_version: str = ""
     language: str = "python"
+    framework: str = DEFAULT_FRAMEWORK
     session_type: str = "none"
     cicd_runner: str = "skip"
     agent_gateway: bool = False
@@ -80,6 +85,7 @@ class ProjectConfig:
             data.get("acli_version") or data.get("version") or cfg.acli_version
         )
         cfg.language = data.get("language", cfg.language)
+        cfg.framework = data.get("framework", cfg.framework)
 
         create_params = data.get("create_params")
         if create_params is None:

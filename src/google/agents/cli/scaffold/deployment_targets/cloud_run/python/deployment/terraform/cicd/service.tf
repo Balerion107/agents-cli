@@ -26,8 +26,8 @@ data "google_project" "project" {
 
 {%- if cookiecutter.session_type == "cloud_sql" %}
 
-# Generate a random password for the database user
-resource "random_password" "db_password" {
+# Ephemeral so the generated password is never persisted to Terraform state.
+ephemeral "random_password" "db_password" {
   for_each = local.deploy_project_ids
 
   length           = 16
@@ -79,7 +79,11 @@ resource "google_sql_user" "db_user" {
   project  = local.deploy_project_ids[each.key]
   name     = "${var.project_name}" # Use project name for user to avoid conflict with default 'postgres'
   instance = google_sql_database_instance.session_db[each.key].name
-  password = random_password.db_password[each.key].result
+
+  # Rotate by bumping password_wo_version and secret_data_wo_version together,
+  # then redeploying so running instances pick up the new password.
+  password_wo         = ephemeral.random_password.db_password[each.key].result
+  password_wo_version = 1
 }
 
 # Store the password in Secret Manager
@@ -99,8 +103,9 @@ resource "google_secret_manager_secret" "db_password" {
 resource "google_secret_manager_secret_version" "db_password" {
   for_each = local.deploy_project_ids
 
-  secret      = google_secret_manager_secret.db_password[each.key].id
-  secret_data = random_password.db_password[each.key].result
+  secret                 = google_secret_manager_secret.db_password[each.key].id
+  secret_data_wo         = ephemeral.random_password.db_password[each.key].result
+  secret_data_wo_version = 1
 }
 
 {%- endif %}

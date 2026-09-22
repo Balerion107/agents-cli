@@ -38,6 +38,8 @@ from google.agents.cli.scaffold.utils.language import (
 _PID_DIR = ".google-agents-cli"
 _PID_FILENAME = "run_server.json"
 _LOG_FILENAME = "run_server.log"
+# Project-relative path to the server log, for pointing users at a traceback.
+SERVER_LOG_PATH = f"{_PID_DIR}/{_LOG_FILENAME}"
 _BASE_PORT = 18080
 _MAX_PORT_ATTEMPTS = 10
 _DEFAULT_IDLE_TIMEOUT = 1800  # 30 minutes
@@ -68,7 +70,7 @@ def ensure_server(
     *,
     language: str,
     idle_timeout: int = _DEFAULT_IDLE_TIMEOUT,
-    trace_to_cloud: bool = False,
+    otel_to_cloud: bool = False,
     use_in_memory_session: bool = True,
     keep_running: bool = False,
 ) -> ServerInfo:
@@ -85,8 +87,10 @@ def ensure_server(
             server launcher. Only takes effect when a new server is started.
         idle_timeout: Seconds of inactivity before the server is considered
             stale and replaced.  Defaults to 30 minutes.
-        trace_to_cloud: When ``True``, export traces to Cloud Trace.
-            Only takes effect when a new server is started.
+        otel_to_cloud: When ``True``, export traces to Cloud Trace.
+            Only takes effect when a new server is started.  Reusing a server
+            started without it warns.  Legacy PID files record this as
+            ``trace_to_cloud``, which is still honoured.
         use_in_memory_session: Sets ``USE_IN_MEMORY_SESSION`` in the
             server's env to ``true`` (default) or ``false``. Only takes
             effect when a new server is started.  When reusing an existing
@@ -126,10 +130,15 @@ def ensure_server(
             if _is_idle(info, idle_timeout):
                 _cleanup(project_root, info)
             else:
-                if trace_to_cloud and not info.get("trace_to_cloud"):
+                # Fall back to the legacy key for servers started before the rename.
+                # Safe to drop once no pre-rename servers can still be running.
+                otel_to_cloud_from_pid_file = info.get("otel_to_cloud") or info.get(
+                    "trace_to_cloud"
+                )
+                if otel_to_cloud and not otel_to_cloud_from_pid_file:
                     click.secho(
                         "Warning: reusing existing server that was started "
-                        "without --trace-to-cloud.\n"
+                        "without --otel-to-cloud.\n"
                         "  Run 'agents-cli run --stop-server' first to "
                         "restart with tracing enabled.",
                         fg="yellow",
@@ -147,7 +156,7 @@ def ensure_server(
         agent_dir=agent_dir,
         port=port,
         language=language,
-        trace_to_cloud=trace_to_cloud,
+        otel_to_cloud=otel_to_cloud,
         use_in_memory_session=use_in_memory_session,
     )
     _wait_for_port(project_root, port, pid=pid)
@@ -155,7 +164,7 @@ def ensure_server(
         project_root,
         pid=pid,
         port=port,
-        trace_to_cloud=trace_to_cloud,
+        otel_to_cloud=otel_to_cloud,
         use_in_memory_session=use_in_memory_session,
     )
     if keep_running:
@@ -237,7 +246,7 @@ def _build_serve_command(
     agent_dir: str,
     port: int,
     language: str,
-    trace_to_cloud: bool = False,
+    otel_to_cloud: bool = False,
 ) -> list[str]:
     """Return the command list for booting the local server for ``language``.
 
@@ -249,7 +258,7 @@ def _build_serve_command(
         project_root=project_root,
         agent_dir=agent_dir,
         port=port,
-        trace_to_cloud=trace_to_cloud,
+        otel_to_cloud=otel_to_cloud,
     )
 
 
@@ -258,7 +267,7 @@ def _python_serve_command(
     project_root: Path,
     agent_dir: str,
     port: int,
-    trace_to_cloud: bool = False,
+    otel_to_cloud: bool = False,
 ) -> list[str]:
     """Booting command for a Python agent.
 
@@ -266,7 +275,7 @@ def _python_serve_command(
     file exists, otherwise falls back to `adk api_server`.
     """
     if _has_fast_api_app(project_root, agent_dir):
-        if trace_to_cloud:
+        if otel_to_cloud:
             logging.warning(
                 "--otel-to-cloud is ignored when booting %s/fast_api_app.py; "
                 "your fast_api_app.py controls telemetry via its own setup. "
@@ -297,7 +306,7 @@ def _python_serve_command(
         "--reload_agents",
         "--no-reload",
     ]
-    if trace_to_cloud:
+    if otel_to_cloud:
         cmd.append("--otel_to_cloud")
     cmd.append(".")
     return cmd
@@ -306,7 +315,7 @@ def _python_serve_command(
 def _go_serve_command(
     *,
     port: int,
-    trace_to_cloud: bool = False,
+    otel_to_cloud: bool = False,
     **_,
 ) -> list[str]:
     """Booting command for a Go agent: `go run . web ... api -path_prefix / a2a`.
@@ -315,7 +324,7 @@ def _go_serve_command(
     ADK REST API at the root (-path_prefix /) and A2A under /a2a on this port.
     """
     cmd = ["go", "run", ".", "web", "--port", str(port)]
-    if trace_to_cloud:
+    if otel_to_cloud:
         cmd.append("--otel_to_cloud")
     return [*cmd, "api", "-path_prefix", "/", "a2a", "appinfo"]
 
@@ -340,7 +349,7 @@ def _start_server(
     agent_dir: str,
     port: int,
     language: str,
-    trace_to_cloud: bool = False,
+    otel_to_cloud: bool = False,
     use_in_memory_session: bool = True,
 ) -> int:
     """Start the local server as a detached background process.
@@ -361,7 +370,7 @@ def _start_server(
         agent_dir=agent_dir,
         port=port,
         language=language,
-        trace_to_cloud=trace_to_cloud,
+        otel_to_cloud=otel_to_cloud,
     )
 
     env = os.environ.copy()
@@ -428,7 +437,7 @@ def _wait_for_port(
         if pid is not None and not psutil.pid_exists(pid):
             raise click.ClickException(
                 "Local server process exited during startup.\n"
-                f"  Check logs: {_PID_DIR}/{_LOG_FILENAME}"
+                f"  Check logs: {SERVER_LOG_PATH}"
             )
         try:
             urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1)
@@ -464,7 +473,7 @@ def _wait_for_port(
 
     raise click.ClickException(
         f"Local server did not start within {timeout}s.\n"
-        f"  Check logs: {_PID_DIR}/{_LOG_FILENAME}\n"
+        f"  Check logs: {SERVER_LOG_PATH}\n"
         f"  Log content:\n{log_content}"
     )
 
@@ -491,7 +500,7 @@ def _write_pid_file(
     *,
     pid: int,
     port: int,
-    trace_to_cloud: bool = False,
+    otel_to_cloud: bool = False,
     use_in_memory_session: bool = True,
 ) -> None:
     now = datetime.now(UTC).isoformat()
@@ -500,7 +509,7 @@ def _write_pid_file(
         "port": port,
         "started_at": now,
         "last_activity": now,
-        "trace_to_cloud": trace_to_cloud,
+        "otel_to_cloud": otel_to_cloud,
         "use_in_memory_session": use_in_memory_session,
     }
     path = _pid_file_path(project_root)

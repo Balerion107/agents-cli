@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import click
 from click.core import ParameterSource
@@ -31,6 +31,7 @@ from google.agents.cli._output import Console
 from google.agents.cli._project import find_project_config
 
 from ..utils import cli_options, remote_template, template
+from ..utils.cli_options import InteractionMode
 from ..utils.command import run_gcloud_command
 from ..utils.fs import standard_ignore_patterns
 from ..utils.gcp import verify_credentials_and_vertex
@@ -61,6 +62,7 @@ class AgentSelection:
     remote_spec: remote_template.RemoteTemplateSpec | None
     recorded_spec: str | None
     bq_analytics: bool
+    template_repo_root: pathlib.Path | None
 
 
 @dataclass
@@ -73,6 +75,59 @@ class LoadedTemplateConfig:
     deployment_agent_name: str
     remote_config: dict | None
     cli_overrides: dict | None
+
+
+@dataclass(frozen=True)
+class CreationInputs:
+    """The raw ``create`` request: the CLI inputs that drive resolution."""
+
+    agent: str | None
+    deployment_target: str | None
+    cicd_runner: str | None
+    session_type: str | None
+    region: str
+    region_from_cli: bool
+    prototype: bool
+    agent_garden: bool
+    agent_gateway: bool | None
+    agent_directory: str | None
+    root_agent_name: str | None
+    agent_guidance_filename: str
+    base_template: str | None
+    cli_overrides: dict | None
+    bq_analytics: bool
+    skip_checks: bool
+    skip_deps: bool
+    locked: bool
+
+
+@dataclass(frozen=True)
+class ProjectLocation:
+    """Where the generated project lives on disk."""
+
+    project_name: str
+    destination_dir: pathlib.Path
+    output_dir: str | None
+    in_folder: bool
+
+    @property
+    def project_path(self) -> pathlib.Path:
+        # In-folder templating writes into the destination itself; otherwise the
+        # project gets its own subdirectory named after it.
+        if self.in_folder:
+            return self.destination_dir
+        return self.destination_dir / self.project_name
+
+
+@dataclass(frozen=True)
+class RenderPlan:
+    """The resolved choices produced by the resolver chain."""
+
+    deployment_target: str
+    cicd_runner: str
+    session_type: str | None
+    region: str
+    google_cloud_project: str | None
 
 
 def _handle_create_errors(f: Callable) -> Callable:
@@ -171,291 +226,92 @@ def create(
     agent_guidance_filename: str = "GEMINI.md",
 ) -> None:
     """Create GCP-based AI agent projects from templates."""
-    # A quiet run builds a throwaway tree for the three-way merge behind
-    # `scaffold enhance` and `scaffold upgrade`, so nothing it says is addressed
-    # to anyone. Warnings and errors still print.
-    if quiet:
-        skip_welcome = True
-
-    # Display welcome banner (unless skipped)
-    if not skip_welcome:
-        display_welcome_banner(agent=agent, agent_garden=agent_garden, quiet=auto_approve)
-
-    project_name = _resolve_project_name(
-        project_name,
-        interactive=interactive,
-        auto_approve=auto_approve,
-        output_dir=output_dir,
-    )
-
     # Setup debug logging if enabled
     if debug:
         logging.basicConfig(level=logging.DEBUG)
         console.print("> Debug mode enabled")
         logging.debug("Starting CLI in debug mode")
 
-    # Handle --adk quickstart flag
+    inputs = CreationInputs(
+        agent=agent,
+        deployment_target=deployment_target,
+        cicd_runner=cicd_runner,
+        session_type=session_type,
+        region=region,
+        region_from_cli=(
+            ctx.get_parameter_source("region") == ParameterSource.COMMANDLINE
+        ),
+        prototype=prototype,
+        agent_garden=agent_garden,
+        agent_gateway=agent_gateway,
+        agent_directory=agent_directory,
+        root_agent_name=root_agent_name,
+        agent_guidance_filename=agent_guidance_filename,
+        base_template=base_template,
+        cli_overrides=cli_overrides,
+        bq_analytics=bq_analytics,
+        skip_checks=skip_checks,
+        skip_deps=skip_deps,
+        locked=locked,
+    )
+
+    # A quiet run builds a throwaway tree for the three-way merge behind
+    # `scaffold enhance` and `scaffold upgrade`, so nothing it says is addressed
+    # to anyone. Warnings and errors still print.
+    if quiet:
+        skip_welcome = True
+
+    if not skip_welcome:
+        display_welcome_banner(agent=agent, agent_garden=agent_garden, quiet=auto_approve)
+
+    mode = InteractionMode(
+        interactive=interactive, auto_approve=auto_approve, quiet=quiet
+    )
+
+    # Resolve the project name before the quickstart flips --auto-approve on, so
+    # `--adk` with no name still errors in strict programmatic mode rather than
+    # silently defaulting to "my-agent".
+    project_name = _resolve_project_name(project_name, mode=mode, output_dir=output_dir)
+
+    # Handle --adk quickstart flag: forces adk + agent_runtime + prototype on the
+    # inputs and auto-approve on the interaction mode.
     if adk:
-        console.print(
-            "⚡ ADK quickstart: adk + Agent Runtime + prototype mode\n",
-            style="cyan",
-        )
-
-        if agent and agent != "adk":
-            console.print(
-                f"Info: --agent '{agent}' ignored due to --adk flag (using adk).",
-                style="yellow",
-            )
-        agent = "adk"
-
-        if deployment_target and deployment_target != "agent_runtime":
-            console.print(
-                f"Info: --deployment-target '{deployment_target}' ignored due to --adk flag (using agent_runtime).",
-                style="yellow",
-            )
-        deployment_target = "agent_runtime"
-
-        # Enable prototype mode and auto-approve
-        prototype = True
-        auto_approve = True
-
-        logging.debug(
-            "ADK quickstart mode: agent=adk, deployment_target=agent_runtime, prototype=True, auto_approve=True"
-        )
+        inputs, mode = _apply_adk_python_quickstart(inputs, mode)
 
     # Convert output_dir to Path if provided, otherwise use current directory
     destination_dir = pathlib.Path(output_dir) if output_dir else pathlib.Path.cwd()
     destination_dir = destination_dir.resolve()  # Convert to absolute path
 
-    project_path = _prepare_project_path(
-        destination_dir,
-        project_name,
-        in_folder=in_folder,
-        auto_approve=auto_approve,
-        interactive=interactive,
+    location = _prepare_project_path(
+        project_name, destination_dir, output_dir, in_folder=in_folder, mode=mode
     )
 
-    resolved = _resolve_template(
-        agent,
-        deployment_target=deployment_target,
-        interactive=interactive,
-        auto_approve=auto_approve,
-        locked=locked,
-        project_name=project_name,
-        base_template=base_template,
-        cli_overrides=cli_overrides,
-        bq_analytics=bq_analytics,
-    )
+    resolved = _resolve_template(inputs, mode, project_name=location.project_name)
     if resolved is None:
         # A version-locked template executed a nested command; nothing more to do.
         return
 
     selection, loaded = resolved
-    agent = selection.agent
-    final_agent = selection.final_agent
-    template_source_path = selection.template_source_path
-    temp_dir_to_clean = selection.temp_dir_to_clean
-    remote_spec = selection.remote_spec
-    recorded_spec = selection.recorded_spec
-    bq_analytics = selection.bq_analytics
-    config = loaded.config
-    template_path = loaded.template_path
-    deployment_agent_name = loaded.deployment_agent_name
-    remote_config = loaded.remote_config
-    base_template_name = loaded.base_template_name
-    cli_overrides = loaded.cli_overrides
 
-    final_deployment = _resolve_deployment_target(
-        deployment_target=deployment_target,
-        prototype=prototype,
-        deployment_agent_name=deployment_agent_name,
-        remote_config=remote_config,
-        interactive=interactive,
-        auto_approve=auto_approve,
+    plan = _resolve_project(loaded, inputs, mode)
+
+    _render_project(
+        selection, loaded, location=location, plan=plan, inputs=inputs, mode=mode
     )
-    logging.debug("Selected deployment target: %s", final_deployment)
-
-    if agent_gateway and final_deployment != "agent_runtime":
-        raise click.UsageError(
-            f"--agent-gateway is not supported for deployment target '{final_deployment}'.\n"
-            "  Agent Gateway can only be bound to Agent Runtime deployments.\n"
-            "  Use --deployment-target agent_runtime, or drop --agent-gateway."
-        )
-
-    final_session_type = _resolve_session_type(
-        session_type=session_type,
-        config=config,
-        final_deployment=final_deployment,
-        interactive=interactive,
-        auto_approve=auto_approve,
-        quiet=quiet,
-    )
-    if final_session_type:
-        logging.debug("Selected session type: %s", final_session_type)
-
-    # CI/CD runner selection
-    final_cicd_runner = _resolve_cicd_runner(
-        cicd_runner=cicd_runner,
-        prototype=prototype,
-        agent_garden=agent_garden,
-        final_deployment=final_deployment,
-        interactive=interactive,
-        auto_approve=auto_approve,
-        quiet=quiet,
-    )
-    logging.debug("Selected CI/CD runner: %s", final_cicd_runner)
-
-    # Region confirmation (only in interactive mode, if not explicitly passed via CLI)
-    region = _resolve_region(
-        region,
-        interactive=interactive,
-        region_from_cli=ctx.get_parameter_source("region") == ParameterSource.COMMANDLINE,
-        agent_garden=agent_garden,
-        deployment_target=final_deployment,
-    )
-    logging.debug("Selected region: %s", region)
-
-    from google.agents.cli.deploy._utils import validate_deployment_region
-
-    validate_deployment_region(region, deployment_target)
-
-    # GCP Setup
-    logging.debug("Setting up GCP...")
-    creds_info = _resolve_gcp_creds(
-        skip_checks=skip_checks,
-        auto_approve=auto_approve,
-        interactive=interactive,
-        region=region,
-        agent_garden=agent_garden,
-    )
-
-    # Process template
-    if not template_source_path:
-        template_path = template.get_template_path(final_agent)
-    # template_path is already set above for remote templates
-
-    logging.debug("Template path: %s", template_path)
-    logging.debug("Processing template for project: %s", project_name)
-
-    # Create output directory if it doesn't exist
-    if not destination_dir.exists():
-        destination_dir.mkdir(parents=True)
-
-    logging.debug("Output directory: %s", destination_dir)
-
-    # Construct CLI overrides for template processing
-    final_cli_overrides = cli_overrides or {}
-    if agent_directory:
-        if "settings" not in final_cli_overrides:
-            final_cli_overrides["settings"] = {}
-        final_cli_overrides["settings"]["agent_directory"] = agent_directory
-
-    # `local@.` overlays the current directory onto itself, so the manifest in
-    # the overlay is this project's own and has to survive the copy. Every other
-    # source is a template, whose manifest describes the template.
-    overlay_is_project = isinstance(agent, str) and agent.strip().rstrip("/") == "local@."
-
-    # An in-folder render must not rename the project's agent. The name is
-    # recorded in the manifest and baked into the agent source, so re-deriving
-    # it from the project name would silently undo a rename the user made.
-    existing_config = find_project_config(destination_dir) if in_folder else None
-    recorded_root_agent_name = existing_config.root_agent_name if existing_config else ""
-
-    try:
-        # Process template (handles both local and remote templates)
-        template.process_template(
-            agent_name=final_agent,
-            template_dir=template_path,
-            project_name=project_name,
-            deployment_target=final_deployment,
-            cicd_runner=final_cicd_runner,
-            session_type=final_session_type,
-            output_dir=destination_dir,
-            remote_template_path=template_source_path,
-            remote_config=config,
-            in_folder=in_folder,
-            overlay_is_project=overlay_is_project,
-            # The project records the spec it was fetched from, so enhance and
-            # upgrade can fetch it again.
-            recorded_base_template=recorded_spec if not in_folder else None,
-            cli_overrides=final_cli_overrides,
-            agent_garden=agent_garden,
-            remote_spec=remote_spec,
-            google_cloud_project=creds_info.get("project"),
-            bq_analytics=bq_analytics,
-            agent_gateway=bool(agent_gateway),
-            agent_guidance_filename=agent_guidance_filename,
-            root_agent_name=root_agent_name or recorded_root_agent_name,
-        )
-
-        # Replace region in all files if a different region was specified
-        if region != "us-east1":
-            replace_region_in_files(project_path, region)
-
-        # Remote templates inherit base-template files (app_utils/a2a.py,
-        # fast_api_app.py, the integration e2e tests) that import packages the
-        # remote's own pyproject may not declare — the config merge lets the
-        # remote override the base template's extra_dependencies. Re-add the
-        # resolved base template's deps on the fly so the inherited code (e.g.
-        # `import a2a`) resolves. Skip with --skip-deps (reusing a saved config).
-        if remote_config and not skip_deps:
-            if base_template_name is None:
-                # This should never happen as _resolve_template sets
-                # both remote_config and base_template_name
-                raise RuntimeError("remote_config set without a base template")
-            base_template_path = template.get_template_path(base_template_name)
-            base_config = template.load_template_config(base_template_path)
-            base_deps = base_config.get("settings", {}).get("extra_dependencies", [])
-
-            if base_deps:
-                template.add_base_template_dependencies(
-                    project_path,
-                    base_deps,
-                    base_template_name,
-                    auto_approve=auto_approve,
-                    interactive=interactive,
-                )
-
-    except ValueError as e:
-        # process_template raises ValueError for input the user can fix, so it
-        # gets one line. Any other exception is our bug and keeps its traceback.
-        raise click.ClickException(str(e)) from e
-
-    finally:
-        # Clean up the temporary directory if one was created
-        if temp_dir_to_clean:
-            try:
-                shutil.rmtree(temp_dir_to_clean)
-                logging.debug(
-                    "Successfully cleaned up temporary directory: %s", temp_dir_to_clean
-                )
-            except OSError as e:
-                logging.warning(
-                    f"Failed to clean up temporary directory {temp_dir_to_clean}: {e}"
-                )
 
     # Everything below is the next-steps banner. A quiet run's project lives in
     # a temp directory that is deleted moments later, so telling the user to cd
     # into it would be wrong as well as noisy.
-    if quiet:
+    if mode.quiet:
         return
 
-    _print_next_steps(
-        in_folder=in_folder,
-        destination_dir=destination_dir,
-        project_name=project_name,
-        output_dir=output_dir,
-        final_deployment=final_deployment,
-        final_cicd_runner=final_cicd_runner,
-        config=config,
-    )
+    _print_next_steps(location, plan)
 
 
 def _resolve_project_name(
     project_name: str,
     *,
-    interactive: bool,
-    auto_approve: bool,
+    mode: InteractionMode,
     output_dir: str | None,
 ) -> str:
     """Resolve, validate, and normalize the project name.
@@ -465,9 +321,9 @@ def _resolve_project_name(
     the 26-character limit and returns the normalized name.
     """
     if not project_name:
-        if interactive:
+        if mode.interactive:
             project_name = _prompt_for_project_name(output_dir=output_dir)
-        elif auto_approve:
+        elif mode.auto_approve:
             project_name = "my-agent"
             console.print(
                 f"Info: Project name not specified. Defaulting to '{project_name}' in auto-approve mode.",
@@ -578,19 +434,59 @@ def normalize_project_name(project_name: str) -> str:
     return project_name
 
 
+def _apply_adk_python_quickstart(
+    inputs: CreationInputs, mode: InteractionMode
+) -> tuple[CreationInputs, InteractionMode]:
+    """Coerce inputs for the ``--adk`` quickstart and report any overrides.
+
+    The quickstart forces adk + agent_runtime + prototype + auto-approve, so it
+    warns when it overrides an explicit ``--agent`` / ``--deployment-target``.
+    Returns updated ``(inputs, mode)`` copies with those values applied.
+    """
+    console.print(
+        "⚡ ADK quickstart: adk + Agent Runtime + prototype mode\n",
+        style="cyan",
+    )
+    if inputs.agent and inputs.agent != "adk":
+        console.print(
+            f"Info: --agent '{inputs.agent}' ignored due to --adk flag (using adk).",
+            style="yellow",
+        )
+    if inputs.deployment_target and inputs.deployment_target != "agent_runtime":
+        console.print(
+            f"Info: --deployment-target '{inputs.deployment_target}' ignored due to --adk flag (using agent_runtime).",
+            style="yellow",
+        )
+    logging.debug(
+        "ADK quickstart mode: agent=adk, deployment_target=agent_runtime, prototype=True, auto_approve=True"
+    )
+    return (
+        replace(inputs, agent="adk", deployment_target="agent_runtime", prototype=True),
+        replace(mode, auto_approve=True),
+    )
+
+
 def _prepare_project_path(
-    destination_dir: pathlib.Path,
     project_name: str,
+    destination_dir: pathlib.Path,
+    output_dir: str | None,
     *,
     in_folder: bool,
-    auto_approve: bool,
-    interactive: bool,
-) -> pathlib.Path:
-    """Resolve the project path and prepare the destination.
+    mode: InteractionMode,
+) -> ProjectLocation:
+    """Resolve where the project lives and prepare the destination.
 
     In-folder mode backs up the existing directory (aborting cleanly if the user
-    declines); otherwise verifies the target does not already exist.
+    declines); otherwise verifies the target does not already exist. Returns the
+    resolved `ProjectLocation`.
     """
+    location = ProjectLocation(
+        project_name=project_name,
+        destination_dir=destination_dir,
+        output_dir=output_dir,
+        in_folder=in_folder,
+    )
+
     if in_folder:
         # For in-folder templating, use the current directory directly. In-folder
         # mode is permissive - we assume the user wants to enhance their existing
@@ -601,34 +497,28 @@ def _prepare_project_path(
             create_project_backup(
                 destination_dir,
                 console=console,
-                auto_approve=auto_approve,
-                interactive=interactive,
+                interactive=mode.interactive,
             )
         except click.Abort:
             console.print("✋ [red]Operation cancelled.[/red]")
             raise
 
         console.print()
-        return destination_dir
+        return location
 
     # Check if project would exist in output directory
-    project_path = destination_dir / project_name
-    if project_path.exists():
-        raise click.UsageError(f"Project directory '{project_path}' already exists")
-    return project_path
+    if location.project_path.exists():
+        raise click.UsageError(
+            f"Project directory '{location.project_path}' already exists"
+        )
+    return location
 
 
 def _resolve_template(
-    agent: str | None,
+    inputs: CreationInputs,
+    mode: InteractionMode,
     *,
-    deployment_target: str | None,
-    interactive: bool,
-    auto_approve: bool,
-    locked: bool,
     project_name: str,
-    base_template: str | None,
-    cli_overrides: dict | None,
-    bq_analytics: bool,
 ) -> tuple[AgentSelection, LoadedTemplateConfig] | None:
     """Resolve the agent selection and load its (possibly remote) template config.
 
@@ -638,13 +528,13 @@ def _resolve_template(
     otherwise returns the `(AgentSelect, LoadedTemplateConfig)` pair.
     """
     agent_selection = _select_agent(
-        agent,
-        deployment_target=deployment_target,
-        interactive=interactive,
-        auto_approve=auto_approve,
-        locked=locked,
+        inputs.agent,
+        deployment_target=inputs.deployment_target,
+        interactive=mode.interactive,
+        auto_approve=mode.auto_approve,
+        locked=inputs.locked,
         project_name=project_name,
-        bq_analytics=bq_analytics,
+        bq_analytics=inputs.bq_analytics,
     )
     if agent_selection is None:
         # A version-locked template executed a nested command; nothing more to do.
@@ -653,8 +543,8 @@ def _resolve_template(
 
     loaded_template_config = _load_template_config(
         agent_selection,
-        base_template=base_template,
-        cli_overrides=cli_overrides,
+        base_template=inputs.base_template,
+        cli_overrides=inputs.cli_overrides,
     )
 
     return agent_selection, loaded_template_config
@@ -745,6 +635,7 @@ def _resolve_specified_agent(
         remote_spec=None,
         recorded_spec=None,
         bq_analytics=bq_analytics,
+        template_repo_root=None,
     )
 
 
@@ -803,6 +694,7 @@ def _resolve_local_spec(
         remote_spec=None,
         recorded_spec=recorded_spec,
         bq_analytics=bq_analytics,
+        template_repo_root=None,
     )
 
 
@@ -824,18 +716,19 @@ def _resolve_remote_spec(
     if not remote_spec:
         return None
 
-    template_source_path, temp_dir_to_clean = _fetch_remote_template_source(
+    fetched = _fetch_remote_template_source(
         remote_spec, agent, locked=locked, project_name=project_name
     )
     return AgentSelection(
         agent=agent,
         # Generate a unique name for the remote template.
         final_agent=f"remote_{hash(agent)}",
-        template_source_path=template_source_path,
-        temp_dir_to_clean=temp_dir_to_clean,
+        template_source_path=fetched.template_dir,
+        temp_dir_to_clean=str(fetched.temp_dir),
         remote_spec=remote_spec,
         recorded_spec=agent,
         bq_analytics=bq_analytics,
+        template_repo_root=fetched.repo_root,
     )
 
 
@@ -845,16 +738,17 @@ def _fetch_remote_template_source(
     *,
     locked: bool,
     project_name: str,
-) -> tuple[pathlib.Path, str]:
+) -> remote_template.FetchedTemplate:
     """Fetch a remote/adk-samples template, printing progress and the ADK caveat.
 
     Wraps ``remote_template.fetch_remote_template`` with the user-facing
     messaging shared by the CLI and interactive (browse) agent-selection paths.
 
     Returns:
-        A ``(template_source_path, temp_dir_to_clean)`` tuple. The caller keeps
-        ownership of the ``agent``-derived values (``recorded_spec`` and the
-        generated ``remote_<hash>`` name), which differ per call site.
+        The ``FetchedTemplate`` from ``fetch_remote_template`` (template
+        directory, temp directory to clean up, and repository root). The caller
+        keeps ownership of the ``agent``-derived values (``recorded_spec`` and
+        the generated ``remote_<hash>`` name), which differ per call site.
     """
     if remote_spec.is_adk_samples:
         console.print(
@@ -864,14 +758,14 @@ def _fetch_remote_template_source(
     else:
         console.print(f"Fetching remote template: {agent}")
 
-    template_source_path, temp_dir_path = remote_template.fetch_remote_template(
+    fetched = remote_template.fetch_remote_template(
         remote_spec, agent, locked, project_name
     )
 
     # Show informational message for ADK samples with smart defaults
     if remote_spec.is_adk_samples:
         config = remote_template.load_remote_template_config(
-            template_source_path, is_adk_sample=True
+            fetched.template_dir, is_adk_sample=True
         )
         if not config.get("has_explicit_config", True):
             console.print(
@@ -881,7 +775,7 @@ def _fetch_remote_template_source(
                 "[dim]   Agents CLI attempts to create a working codebase, but you'll need to follow the generated README for complete setup.[/]"
             )
 
-    return template_source_path, str(temp_dir_path)
+    return fetched
 
 
 def _select_agent_interactively(
@@ -946,6 +840,7 @@ def _select_agent_interactively(
         remote_spec=None,
         recorded_spec=None,
         bq_analytics=bq_analytics,
+        template_repo_root=None,
     )
 
 
@@ -1071,8 +966,9 @@ def display_adk_samples_selection() -> AgentSelectionResult:
         if not spec:
             raise RuntimeError("Failed to parse adk-samples repository")
 
-        # Fetch the repository
-        repo_path, _ = remote_template.fetch_remote_template(spec)
+        # Fetch the repository. The spec has no template subpath, so repo_root
+        # is the whole clone — exactly what discover_adk_agents scans.
+        repo_path = remote_template.fetch_remote_template(spec).repo_root
 
         # Use shared ADK discovery function
         adk_agents = remote_template.discover_adk_agents(repo_path)
@@ -1227,14 +1123,91 @@ def _load_template_config(
     )
 
 
+def _resolve_project(
+    loaded: LoadedTemplateConfig,
+    inputs: CreationInputs,
+    mode: InteractionMode,
+) -> RenderPlan:
+    """Resolve deployment target, session type, CI/CD runner, region and GCP
+    project into a `RenderPlan`.
+
+    Runs the resolver chain in order (each step can depend on the previous one),
+    enforces the agent-gateway / region constraints, and returns the resolved
+    choices consumed by `_render_project`.
+    """
+    final_deployment = _resolve_deployment_target(
+        deployment_target=inputs.deployment_target,
+        prototype=inputs.prototype,
+        deployment_agent_name=loaded.deployment_agent_name,
+        remote_config=loaded.remote_config,
+        mode=mode,
+    )
+    logging.debug("Selected deployment target: %s", final_deployment)
+
+    if inputs.agent_gateway and final_deployment != "agent_runtime":
+        raise click.UsageError(
+            f"--agent-gateway is not supported for deployment target '{final_deployment}'.\n"
+            "  Agent Gateway can only be bound to Agent Runtime deployments.\n"
+            "  Use --deployment-target agent_runtime, or drop --agent-gateway."
+        )
+
+    final_session_type = _resolve_session_type(
+        session_type=inputs.session_type,
+        config=loaded.config,
+        final_deployment=final_deployment,
+        mode=mode,
+    )
+    if final_session_type:
+        logging.debug("Selected session type: %s", final_session_type)
+
+    final_cicd_runner = _resolve_cicd_runner(
+        cicd_runner=inputs.cicd_runner,
+        prototype=inputs.prototype,
+        agent_garden=inputs.agent_garden,
+        final_deployment=final_deployment,
+        mode=mode,
+    )
+    logging.debug("Selected CI/CD runner: %s", final_cicd_runner)
+
+    # Region confirmation (only in interactive mode, if not explicitly passed via CLI)
+    region = _resolve_region(
+        inputs.region,
+        region_from_cli=inputs.region_from_cli,
+        agent_garden=inputs.agent_garden,
+        mode=mode,
+        deployment_target=final_deployment,
+    )
+    logging.debug("Selected region: %s", region)
+
+    from google.agents.cli.deploy._utils import validate_deployment_region
+
+    validate_deployment_region(region, inputs.deployment_target)
+
+    # GCP Setup
+    logging.debug("Setting up GCP...")
+    creds_info = _resolve_gcp_creds(
+        skip_checks=inputs.skip_checks,
+        region=region,
+        agent_garden=inputs.agent_garden,
+        mode=mode,
+    )
+
+    return RenderPlan(
+        deployment_target=final_deployment,
+        cicd_runner=final_cicd_runner,
+        session_type=final_session_type,
+        region=region,
+        google_cloud_project=creds_info.get("project"),
+    )
+
+
 def _resolve_deployment_target(
     *,
     deployment_target: str | None,
     prototype: bool,
     deployment_agent_name: str,
     remote_config: dict | None,
-    interactive: bool,
-    auto_approve: bool,
+    mode: InteractionMode,
 ) -> str:
     """Resolve the deployment target.
 
@@ -1268,11 +1241,11 @@ def _resolve_deployment_target(
             style="yellow",
         )
         return available_targets[0]
-    elif interactive:
+    elif mode.interactive:
         return template.prompt_deployment_target(
             deployment_agent_name, remote_config=remote_config
         )
-    elif auto_approve:
+    elif mode.auto_approve:
         console.print(
             f"Info: --deployment-target not specified. Defaulting to '{available_targets[0]}' in auto-approve mode.",
             style="yellow",
@@ -1290,9 +1263,7 @@ def _resolve_session_type(
     session_type: str | None,
     config: dict,
     final_deployment: str,
-    interactive: bool,
-    auto_approve: bool,
-    quiet: bool,
+    mode: InteractionMode,
 ) -> str | None:
     """Resolve the session type for the selected agent and deployment target.
 
@@ -1324,10 +1295,10 @@ def _resolve_session_type(
         if session_type:
             return session_type
 
-        if interactive:
+        if mode.interactive:
             return template.prompt_session_type_selection()
 
-        if auto_approve and not quiet:
+        if mode.auto_approve and not mode.quiet:
             console.print(
                 "Info: --session-type not specified. Defaulting to 'in_memory' in auto-approve mode.",
                 style="yellow",
@@ -1343,9 +1314,7 @@ def _resolve_cicd_runner(
     prototype: bool,
     agent_garden: bool,
     final_deployment: str,
-    interactive: bool,
-    auto_approve: bool,
-    quiet: bool,
+    mode: InteractionMode,
 ) -> str:
     """Resolve the CI/CD runner.
 
@@ -1372,10 +1341,10 @@ def _resolve_cicd_runner(
         return "skip"
     elif cicd_runner:
         return cicd_runner
-    elif interactive:
+    elif mode.interactive:
         return template.prompt_cicd_runner_selection()
 
-    if auto_approve and not quiet:
+    if mode.auto_approve and not mode.quiet:
         console.print(
             "Info: --cicd-runner not specified. Defaulting to 'skip' (simple mode) in auto-approve mode.",
             style="yellow",
@@ -1386,9 +1355,9 @@ def _resolve_cicd_runner(
 def _resolve_region(
     region: str,
     *,
-    interactive: bool,
     region_from_cli: bool,
     agent_garden: bool,
+    mode: InteractionMode,
     deployment_target: str | None,
 ) -> str:
     """Confirm the deployment region interactively.
@@ -1398,7 +1367,7 @@ def _resolve_region(
     'none' provisions no cloud infrastructure, so the region is irrelevant and
     the prompt is skipped.
     """
-    if interactive and not region_from_cli and deployment_target != "none":
+    if mode.interactive and not region_from_cli and deployment_target != "none":
         # Show Agent Runtime supported regions link if agent_garden flag is set
         if agent_garden:
             console.print(
@@ -1438,10 +1407,9 @@ def prompt_region_confirmation(
 def _resolve_gcp_creds(
     *,
     skip_checks: bool,
-    auto_approve: bool,
-    interactive: bool,
     region: str,
     agent_garden: bool,
+    mode: InteractionMode,
 ) -> dict:
     """Resolve GCP project / credentials info for the generated .env.
 
@@ -1452,9 +1420,8 @@ def _resolve_gcp_creds(
     if not skip_checks:
         try:
             return _setup_gcp_environment(
-                auto_approve=auto_approve,
-                interactive=interactive,
-                skip_checks=skip_checks,
+                auto_approve=mode.auto_approve,
+                interactive=mode.interactive,
                 region=region,
                 agent_garden=agent_garden,
             )
@@ -1479,7 +1446,6 @@ def _resolve_gcp_creds(
 def _setup_gcp_environment(
     *,
     auto_approve: bool,
-    skip_checks: bool,
     region: str,
     agent_garden: bool = False,
     interactive: bool = False,
@@ -1488,7 +1454,6 @@ def _setup_gcp_environment(
 
     Args:
         auto_approve: Whether to skip confirmation prompts
-        skip_checks: Whether to skip verification checks
         region: GCP region for deployment
         agent_garden: Whether this deployment is from Agent Garden
         interactive: Whether to show interactive prompts
@@ -1496,12 +1461,6 @@ def _setup_gcp_environment(
     Returns:
         Dictionary with credential information
     """
-    # Skip all verification if requested
-    if skip_checks:
-        logging.debug("Skipping verification checks due to --skip-checks flag")
-        console.print("> Skipping verification checks", style="yellow")
-        return {"project": "unknown"}
-
     logging.debug("Verifying GCP credentials...")
 
     context = "agent-garden" if agent_garden else None
@@ -1635,6 +1594,136 @@ def set_gcp_project(project_id: str, set_quota_project: bool = True) -> None:
     console.print(f"> Successfully configured project: {project_id}")
 
 
+def _render_project(
+    selection: AgentSelection,
+    loaded: LoadedTemplateConfig,
+    *,
+    location: ProjectLocation,
+    plan: RenderPlan,
+    inputs: CreationInputs,
+    mode: InteractionMode,
+) -> None:
+    """Render the resolved template into the destination and finalize the project.
+
+    Processes the template (local or remote), rewrites the region when it differs
+    from the default, re-adds the base template's inherited dependencies for
+    remote templates, and always cleans up any temporary source directory.
+    """
+    destination_dir = location.destination_dir
+
+    # Built-in agents resolve their template path here; remote/local templates
+    # already carry it in `loaded.template_path`.
+    template_path = loaded.template_path
+    if not selection.template_source_path:
+        template_path = template.get_template_path(selection.final_agent)
+
+    logging.debug("Template path: %s", template_path)
+    logging.debug("Processing template for project: %s", location.project_name)
+
+    if not destination_dir.exists():
+        destination_dir.mkdir(parents=True)
+    logging.debug("Output directory: %s", destination_dir)
+
+    # Construct CLI overrides for template processing
+    final_cli_overrides = loaded.cli_overrides or {}
+    if inputs.agent_directory:
+        if "settings" not in final_cli_overrides:
+            final_cli_overrides["settings"] = {}
+        final_cli_overrides["settings"]["agent_directory"] = inputs.agent_directory
+
+    # `local@.` overlays the current directory onto itself, so the manifest in
+    # the overlay is this project's own and has to survive the copy. Every other
+    # source is a template, whose manifest describes the template.
+    overlay_is_project = (
+        isinstance(selection.agent, str)
+        and selection.agent.strip().rstrip("/") == "local@."
+    )
+
+    # An in-folder render must not rename the project's agent. The name is
+    # recorded in the manifest and baked into the agent source, so re-deriving
+    # it from the project name would silently undo a rename the user made.
+    existing_config = find_project_config(destination_dir) if location.in_folder else None
+    recorded_root_agent_name = existing_config.root_agent_name if existing_config else ""
+
+    try:
+        # The project records the spec it was fetched from, so enhance and
+        # upgrade can fetch it again.
+        recorded_base_template = (
+            selection.recorded_spec if not location.in_folder else None
+        )
+        # Process template (handles both local and remote templates)
+        template.process_template(
+            agent_name=selection.final_agent,
+            template_dir=template_path,
+            project_name=location.project_name,
+            deployment_target=plan.deployment_target,
+            cicd_runner=plan.cicd_runner,
+            session_type=plan.session_type,
+            output_dir=destination_dir,
+            remote_template_path=selection.template_source_path,
+            remote_config=loaded.config,
+            template_repo_root=selection.template_repo_root,
+            in_folder=location.in_folder,
+            overlay_is_project=overlay_is_project,
+            recorded_base_template=recorded_base_template,
+            cli_overrides=final_cli_overrides,
+            agent_garden=inputs.agent_garden,
+            remote_spec=selection.remote_spec,
+            google_cloud_project=plan.google_cloud_project,
+            bq_analytics=selection.bq_analytics,
+            agent_gateway=bool(inputs.agent_gateway),
+            agent_guidance_filename=inputs.agent_guidance_filename,
+            root_agent_name=inputs.root_agent_name or recorded_root_agent_name,
+        )
+
+        # Replace region in all files if a different region was specified
+        if plan.region != "us-east1":
+            replace_region_in_files(location.project_path, plan.region)
+
+        # Remote templates inherit base-template files (app_utils/a2a.py,
+        # fast_api_app.py, the integration e2e tests) that import packages the
+        # remote's own pyproject may not declare — the config merge lets the
+        # remote override the base template's extra_dependencies. Re-add the
+        # resolved base template's deps on the fly so the inherited code (e.g.
+        # `import a2a`) resolves. Skip with --skip-deps (reusing a saved config).
+        if loaded.remote_config and not inputs.skip_deps:
+            if loaded.base_template_name is None:
+                # This should never happen as _resolve_template sets
+                # both remote_config and base_template_name
+                raise RuntimeError("remote_config set without a base template")
+            base_template_path = template.get_template_path(loaded.base_template_name)
+            base_config = template.load_template_config(base_template_path)
+            base_deps = base_config.get("settings", {}).get("extra_dependencies", [])
+
+            if base_deps:
+                template.add_base_template_dependencies(
+                    location.project_path,
+                    base_deps,
+                    loaded.base_template_name,
+                    auto_approve=mode.auto_approve,
+                    interactive=mode.interactive,
+                )
+
+    except ValueError as e:
+        # process_template raises ValueError for input the user can fix, so it
+        # gets one line. Any other exception is our bug and keeps its traceback.
+        raise click.ClickException(str(e)) from e
+
+    finally:
+        # Clean up the temporary directory if one was created
+        if selection.temp_dir_to_clean:
+            try:
+                shutil.rmtree(selection.temp_dir_to_clean)
+                logging.debug(
+                    "Successfully cleaned up temporary directory: %s",
+                    selection.temp_dir_to_clean,
+                )
+            except OSError as e:
+                logging.warning(
+                    f"Failed to clean up temporary directory {selection.temp_dir_to_clean}: {e}"
+                )
+
+
 def replace_region_in_files(project_path: pathlib.Path, new_region: str) -> None:
     """Replace all instances of 'us-east1' with the specified region in project files.
     Also handles agent_platform_search region mapping.
@@ -1689,19 +1778,14 @@ def replace_region_in_files(project_path: pathlib.Path, new_region: str) -> None
             continue
 
 
-def _print_next_steps(
-    *,
-    in_folder: bool,
-    destination_dir: pathlib.Path,
-    project_name: str,
-    output_dir: str | None,
-    final_deployment: str,
-    final_cicd_runner: str,
-    config: dict,
-) -> None:
+def _print_next_steps(location: ProjectLocation, plan: RenderPlan) -> None:
     """Print the post-creation success banner and next-step hints."""
-    if not in_folder:
-        cd_path = (destination_dir / project_name) if output_dir else project_name
+    if not location.in_folder:
+        cd_path = (
+            (location.destination_dir / location.project_name)
+            if location.output_dir
+            else location.project_name
+        )
     else:
         cd_path = "."
 
@@ -1711,19 +1795,17 @@ def _print_next_steps(
     console.print(f"   README:    [cyan]cat {cd_path}/README.md[/]")
 
     # Show enhance hint for prototype mode
-    if final_deployment == "none":
+    if plan.deployment_target == "none":
         console.print(
             "\n[bold cyan]💡 Tip[/]\n"
             "   Add a deployment target later with: [cyan]agents-cli scaffold enhance[/]"
         )
-    elif final_cicd_runner == "skip":
+    elif plan.cicd_runner == "skip":
         console.print(
             "\n[bold cyan]💡 Tip[/]\n"
             "   Once ready for production, run: [cyan]agents-cli scaffold enhance[/]"
         )
 
-    # Check if the agent has a 'dev' command in its settings
-    config.get("settings", {}).get("interactive_command", "playground")
     console.print("\n[bold cyan]🚀 Get Started[/]")
     console.print(
         f"   [bold bright_green]cd {cd_path} && agents-cli install && agents-cli playground[/]"

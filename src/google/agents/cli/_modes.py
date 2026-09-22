@@ -25,7 +25,5 @@ MODE_ADK_LIVE = "adk_live"
 # message from these, so adding a mode is one edit per set rather than one per
 # call site.
 RUN_MODES = (MODE_A2A, MODE_ADK, MODE_ADK_LIVE)
-# A local server serves ADK only, so a2a needs a --url.
-LOCAL_RUN_MODES = (MODE_ADK, MODE_ADK_LIVE)
 # eval speaks ADK only.
 EVAL_MODES = (MODE_ADK, MODE_ADK_LIVE)

@@ -90,3 +90,15 @@ def clear_operation() -> None:
         del data["pending_operation"]
         with open(METADATA_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+
+
+def read_remote_agent_runtime_id() -> str | None:
+    """Read the remote_agent_runtime_id from METADATA_FILE."""
+    value = _read_metadata().get("remote_agent_runtime_id")
+    # Older scaffolds shipped the literal string ``"None"`` as a placeholder, so
+    # treat that (and blank values) as "no id recorded" — otherwise a first deploy
+    # would try to update an engine literally named ``None`` and fail with a 404
+    # instead of creating a new one.
+    if isinstance(value, str) and value.strip().lower() in ("", "none", "null"):
+        return None
+    return value

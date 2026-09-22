@@ -12,7 +12,7 @@ description: >
 metadata:
   author: Google
   license: Apache-2.0
-  version: 1.6.1
+  version: 1.7.0
   requires:
     bins:
       - agents-cli
@@ -131,12 +131,16 @@ agents-cli scaffold enhance . --cicd-runner github_actions
 > **`adk` and `adk_go` are the only built-in templates.** `adk` is the default, so a Go project
 > needs `--agent adk_go` explicitly.
 > Other frameworks ship as template repos you scaffold
-> from directly: `--agent google/agents-cli/extensions/langchain/template@v1.6.1`, with nothing installed. The first-party LangChain
+> from directly: `--agent google/agents-cli/extensions/langchain/template@v1.7.0`, with nothing installed. The first-party LangChain
 > template is `extensions/langchain/template/` in the agents-cli repo; see
 > `/google-agents-cli-workflow` → `references/extension.md` to publish your own. Capabilities
 > beyond the template — retrieval, sandboxed execution, memory, OAuth, guardrails — are
 > clone-and-study recipes, not templates. **ADK Python:** see the topic index in
 > `/google-agents-cli-adk-code` → `references/samples.md`.
+
+> **Live and voice agents:** no template. Scaffold `adk`, then follow the conversion checklist
+> in `/google-agents-cli-adk-code` (`references/adk-python-live.md`, "Converting a scaffolded
+> project to Live"). The model swap is one of five edits.
 
 ---
 
@@ -219,7 +223,7 @@ This is useful for:
 - **Agent Runtime clears session_type** — if deploying to `agent_runtime`, remove any `session_type` setting from your code
 - **Start with `--prototype`** for quick iteration — add deployment later with `enhance`
 - **Project names** must be ≤26 characters, lowercase, letters/numbers/hyphens only
-- **NEVER write A2A code from scratch** — A2A is built into the scaffolded app (the `adk` and `adk_go` templates and framework templates alike); each language's A2A surface (import paths, `AgentCard` schema etc.) is non-trivial and changes across versions. Scaffold normally; never hand-write the A2A surface.
+- **NEVER write A2A code from scratch** — A2A is built into the scaffolded app (the `adk` and `adk_go` templates and framework templates alike); each language's A2A surface (import paths, `AgentCard` schema etc.) is non-trivial and changes across versions. Scaffold normally; never hand-write the A2A surface. (The only sanctioned A2A hand-edit is *removing* the generated wiring for a **Live** agent, which can't be served over A2A — see `/google-agents-cli-adk-code`, `references/adk-python-live.md`.)
 
 ---
 

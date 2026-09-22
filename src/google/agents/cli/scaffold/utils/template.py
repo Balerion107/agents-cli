@@ -20,7 +20,6 @@ import re
 import shlex
 import shutil
 import subprocess
-import sys
 import tempfile
 from datetime import UTC, datetime
 from typing import Any
@@ -33,6 +32,12 @@ from google.agents.cli._defaults import DEFAULT_MODEL
 from google.agents.cli._output import Console
 from google.agents.cli._project import root_agent_name as derive_root_agent_name
 
+from .copy_files import (
+    DEFAULT_FRONTEND,
+    copy_files,
+    copy_flat_structure_agent_files,
+    copy_frontend_files,
+)
 from .lock_utils import get_lock_filename, is_empty_agent
 from .remote_template import (
     get_base_template_name,
@@ -414,7 +419,6 @@ DEPLOYMENT_TARGETS = {
     },
 }
 SUPPORTED_LANGUAGES = ["python", "go", "java", "typescript"]
-DEFAULT_FRONTEND = "None"
 
 
 def generate_java_package_vars(project_name: str) -> dict[str, str]:
@@ -1003,6 +1007,7 @@ def process_template(
     session_type: str | None = None,
     output_dir: pathlib.Path | None = None,
     remote_template_path: pathlib.Path | None = None,
+    template_repo_root: pathlib.Path | None = None,
     remote_config: dict[str, Any] | None = None,
     in_folder: bool = False,
     overlay_is_project: bool = False,
@@ -1027,7 +1032,7 @@ def process_template(
         session_type: Optional session type for cloud_run deployment
         output_dir: Optional output directory path, defaults to current directory
         remote_template_path: Optional path to remote template for overlay
-        remote_config: Optional remote template configuration
+        template_repo_root: Root of the fetched template's repository (the git clone).
         in_folder: Whether to template directly into the output directory instead of creating a subdirectory
         overlay_is_project: True when the overlay source is the output project
             itself (--agent local@.), so its agents-cli-manifest.yaml is the
@@ -1380,6 +1385,7 @@ def process_template(
                 "settings": settings,
                 "tags": tags,
                 "is_a2a": "a2a" in tags,
+                "framework": "google-adk" if "adk" in tags else "custom",
                 "language": language,
                 "deployment_target": deployment_target or "",
                 "cicd_runner": cicd_runner or "google_cloud_build",
@@ -1479,6 +1485,8 @@ def process_template(
                         remote_template_path,
                         generated_project_dir,
                         agent_directory,
+                        clone_root=template_repo_root,
+                        guidance_filename=agent_guidance_filename,
                     )
                 else:
                     # Standard structure: copy as-is
@@ -1489,6 +1497,7 @@ def process_template(
                         overwrite=True,
                         skip_manifest=not overlay_is_project,
                         guidance_filename=agent_guidance_filename,
+                        clone_root=template_repo_root,
                     )
                 logging.debug("Remote template files copied successfully")
 
@@ -1695,265 +1704,3 @@ def process_template(
         finally:
             # Always restore the original working directory
             os.chdir(original_dir)
-
-
-_TOOL_CACHES = frozenset(
-    {"__pycache__", ".ruff_cache", ".pytest_cache", ".mypy_cache", ".venv"}
-)
-
-
-def copy_files(
-    src: pathlib.Path,
-    dst: pathlib.Path,
-    agent_name: str | None = None,
-    overwrite: bool = False,
-    *,
-    skip_manifest: bool = False,
-    guidance_filename: str | None = None,
-) -> None:
-    """
-    Copy files with configurable behavior for exclusions and overwrites.
-
-    Args:
-        src: Source path
-        dst: Destination path
-        agent_name: Name of the agent (for agent-specific exclusions)
-        overwrite: Whether to overwrite existing files (True) or skip them (False)
-        guidance_filename: Write a root AGENTS.md under this name instead, so a
-            template's guide replaces the base one whatever the project calls it.
-        skip_manifest: Skip a root agents-cli-manifest.yaml. Set when copying a
-            fetched template, whose manifest describes the template rather than
-            the project and has already been read for config.
-    """
-
-    def should_skip(path: pathlib.Path) -> bool:
-        """Determine if a file/directory should be skipped during copying.
-        Symlinks are always skipped for remote templates to prevent CWE-59
-        (symlink-following) attacks where an attacker ships a symlink pointing
-        to sensitive host files (e.g. ~/.ssh/id_rsa) and the victim's project
-        ends up with a copy of that file's contents.
-        """
-        # Never follow symlinks from untrusted remote template sources
-        if path.is_symlink():
-            logging.warning(
-                f"Skipping symlink in template source (symlinks are not allowed): {path}"
-            )
-            return True
-        if path.suffix in [".pyc"]:
-            return True
-        if "__pycache__" in str(path) or path.name in _TOOL_CACHES:
-            return True
-        if ".git" in path.parts:
-            return True
-        if path.is_dir() and path.name == ".template":
-            return True
-        if skip_manifest and path.name == "agents-cli-manifest.yaml":
-            return True
-        return False
-
-    def log_windows_path_warning(path: pathlib.Path) -> None:
-        """Log a warning if path exceeds Windows MAX_PATH limit."""
-        if sys.platform == "win32":
-            path_str = str(path.absolute())
-            if len(path_str) >= 260:
-                logging.error(
-                    f"Path length ({len(path_str)} chars) may exceed Windows limit. Try using a shorter output directory."
-                )
-
-    if src.is_dir():
-        if not dst.exists():
-            try:
-                dst.mkdir(parents=True)
-                logging.debug("Created directory: %s", dst)
-            except OSError as e:
-                logging.error(f"Failed to create directory: {dst}")
-                logging.error(f"Error: {e}")
-                raise
-        for item in src.iterdir():
-            if should_skip(item):
-                logging.debug("Skipping file/directory: %s", item)
-                continue
-
-            # Root only: nested AGENTS.md files are the template's own docs.
-            if guidance_filename and item.is_file() and item.name == "AGENTS.md":
-                d = dst / guidance_filename
-            else:
-                d = dst / item.name
-            if item.is_dir():
-                copy_files(item, d, agent_name, overwrite)
-            else:
-                if overwrite or not d.exists():
-                    try:
-                        # Ensure parent directory exists before copying
-                        d.parent.mkdir(parents=True, exist_ok=True)
-                        logging.debug("Copying file: %s -> %s", item, d)
-                        shutil.copy2(item, d)
-                    except OSError:
-                        logging.error(f"Failed to copy: {item} -> {d}")
-                        log_windows_path_warning(d)
-                        raise
-                else:
-                    logging.debug("Skipping existing file: %s", d)
-    else:
-        if not should_skip(src):
-            if overwrite or not dst.exists():
-                try:
-                    # Ensure parent directory exists before copying
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    logging.debug("Copying file: %s -> %s", src, dst)
-                    shutil.copy2(src, dst)
-                except OSError:
-                    logging.error(f"Failed to copy: {src} -> {dst}")
-                    log_windows_path_warning(dst)
-                    raise
-
-
-def copy_frontend_files(frontend_type: str, project_template: pathlib.Path) -> None:
-    """Copy files from the specified frontend folder directly to project root."""
-    # Skip copying if frontend_type is "None" or empty
-    if not frontend_type or frontend_type == "None":
-        logging.debug("Frontend type is 'None' or empty, skipping frontend files")
-        return
-
-    # Get the frontends directory path
-    frontends_path = pathlib.Path(__file__).parent.parent / "frontends" / frontend_type
-
-    if frontends_path.exists():
-        logging.debug("Copying frontend files from %s", frontends_path)
-        # Copy frontend files directly to project root instead of a nested frontend directory
-        copy_files(frontends_path, project_template, overwrite=True)
-    else:
-        logging.warning(f"Frontend type directory not found: {frontends_path}")
-        # Don't fall back to default if it's "None" - just skip
-        if DEFAULT_FRONTEND != "None":
-            logging.info(f"Falling back to default frontend: {DEFAULT_FRONTEND}")
-            copy_frontend_files(DEFAULT_FRONTEND, project_template)
-        else:
-            logging.debug("No default frontend configured, skipping frontend files")
-
-
-def copy_deployment_files(
-    deployment_target: str,
-    agent_name: str,
-    project_template: pathlib.Path,
-    agent_directory: str = "app",
-) -> None:
-    """Copy files from the specified deployment target folder."""
-    if not deployment_target:
-        return
-
-    deployment_path = (
-        pathlib.Path(__file__).parent.parent / "deployment_targets" / deployment_target
-    )
-
-    if deployment_path.exists():
-        logging.debug("Copying deployment files from %s", deployment_path)
-        # Pass agent_name to respect agent-specific exclusions
-        copy_files(
-            deployment_path,
-            project_template,
-            agent_name=agent_name,
-            overwrite=True,
-        )
-    else:
-        logging.warning(f"Deployment target directory not found: {deployment_path}")
-
-
-def _assert_path_within(
-    candidate: pathlib.Path,
-    root: pathlib.Path,
-) -> None:
-    """Raise ValueError if *candidate* is not contained within *root*.
-
-    Both paths are resolved to their real absolute forms before the check so
-    that symbolic links and ``..`` components cannot be used to bypass the
-    boundary.
-
-    Args:
-        candidate: The path that must be inside *root*.
-        root: The allowed root directory.
-
-    Raises:
-        ValueError: If *candidate* resolves to a location outside *root*.
-    """
-    try:
-        candidate.resolve().relative_to(root.resolve())
-    except ValueError as e:
-        raise ValueError(
-            f"Security check failed: '{candidate}' would be written "
-            f"outside the project directory '{root}'. "
-            "Aborting to prevent path-traversal exploitation."
-        ) from e
-
-
-def _skip_symlinks(directory: str, names: list[str]) -> set[str]:
-    """Ignore callback for shutil.copytree to skip symlinks at every nesting level."""
-    return {n for n in names if pathlib.Path(directory, n).is_symlink()}
-
-
-def copy_flat_structure_agent_files(
-    src: pathlib.Path,
-    dst: pathlib.Path,
-    agent_directory: str,
-) -> None:
-    """Copy agent files from a flat structure template to the agent directory.
-
-    For flat structure templates, Python files (*.py) in the root are copied
-    to the agent directory, while other files are copied to the project root.
-
-    Security: symlinks in *src* are never followed; the resolved destination
-    path is verified to be contained within *dst* before any write occurs.
-
-    Args:
-        src: Source path (template root with flat structure)
-        dst: Destination path (project root)
-        agent_directory: Target agent directory name
-    """
-    agent_dst = dst / agent_directory
-    # Path-containment guard: reject traversal that slipped past validation
-    _assert_path_within(agent_dst, dst)
-    agent_dst.mkdir(parents=True, exist_ok=True)
-
-    # Files that should go to agent directory
-    agent_file_extensions = {".py"}
-    # Files to skip entirely
-    skip_files = {"pyproject.toml", "uv.lock", "README.md", ".gitignore"}
-
-    for item in src.iterdir():
-        if item.name.startswith(".") or item.name in skip_files:
-            continue
-        if item.name == "__pycache__":
-            continue
-        if item.is_symlink():
-            logging.warning(
-                f"Skipping symlink in flat-structure template source "
-                f"(symlinks are not allowed): {item}"
-            )
-            continue
-
-        if item.is_file():
-            if item.suffix in agent_file_extensions:
-                # Python files go to agent directory
-                dest_file = agent_dst / item.name
-                _assert_path_within(dest_file, dst)
-                logging.debug(
-                    "Flat structure: copying %s -> %s/%s",
-                    item.name,
-                    agent_directory,
-                    item.name,
-                )
-                shutil.copy2(item, dest_file)
-            else:
-                # Other files go to project root
-                dest_file = dst / item.name
-                _assert_path_within(dest_file, dst)
-                logging.debug("Flat structure: copying %s -> %s", item.name, item.name)
-                shutil.copy2(item, dest_file)
-        elif item.is_dir():
-            # Directories are copied to project root (preserving structure)
-            dest_dir = dst / item.name
-            _assert_path_within(dest_dir, dst)
-            logging.debug("Flat structure: copying directory %s", item.name)
-            if dest_dir.exists():
-                shutil.rmtree(dest_dir)
-            shutil.copytree(item, dest_dir, ignore=_skip_symlinks)

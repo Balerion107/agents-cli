@@ -48,26 +48,11 @@ _console = Console()
     default=False,
     help="Export OpenTelemetry traces/logs to Google Cloud.",
 )
-# TODO: b/533949139
-@click.option(
-    "--trace-to-cloud",
-    is_flag=True,
-    default=False,
-    hidden=True,
-)
-def cmd_playground(port, host, reload_agents, otel_to_cloud, trace_to_cloud):
+def cmd_playground(port, host, reload_agents, otel_to_cloud):
     """Start the local agent playground."""
-    # TODO: b/533949139
-    if trace_to_cloud:
-        logging.warning(
-            "--trace-to-cloud is deprecated and will be removed in a future "
-            "release. Use --otel-to-cloud instead."
-        )
-    otel_to_cloud = otel_to_cloud or trace_to_cloud
     chdir_project_root()
     cfg = read_project_config()
     require_agent_directory(cfg)
-
     # Use 127.0.0.1 instead of localhost to avoid IPv6 resolution issues on Windows.
     browser_host = "127.0.0.1" if host == "0.0.0.0" else host
 

@@ -5,6 +5,7 @@ region: 'us-east1'
 base_template: '{{cookiecutter.recorded_base_template}}'
 generated_at: '{{cookiecutter.generated_at}}'
 language: '{{cookiecutter.language or "python"}}'
+framework: '{{cookiecutter.framework}}'
 create_params:
   # The ADK name of the root agent, as rendered into the agent source. Rename
   # the agent and you must change it in both places: telemetry reports this as

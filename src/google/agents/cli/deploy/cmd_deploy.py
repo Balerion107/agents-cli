@@ -354,6 +354,17 @@ def _print_cloud_run_next_steps(
     help="Container port (Cloud Run / Agent Runtime).",
 )
 @click.option(
+    "--framework",
+    default=None,
+    show_default="the framework recorded in agents-cli-manifest.yaml",
+    help=(
+        "Framework the deployed container implements (Agent Runtime only). "
+        "Sets agent_framework on the Agent Runtime resource, which the Google "
+        "Cloud console reads to pick a playground. The API owns the accepted "
+        "set and quietly falls back to 'custom' for anything else."
+    ),
+)
+@click.option(
     "--memory",
     default=None,
     help=f"Memory limit (Agent Runtime, Cloud Run). Default: {DEFAULT_MEMORY}.",
@@ -514,6 +525,12 @@ def _print_cloud_run_next_steps(
     "governedAccessPath=CLIENT_TO_AGENT. Pass an empty value to unbind. "
     "Omit the flag to leave the current binding alone.",
 )
+@click.option(
+    "--ingress",
+    type=click.Choice(["all", "internal", "internal-and-cloud-load-balancing"]),
+    default=None,
+    help="Ingress traffic allowed to the service (Cloud Run).",
+)
 def cmd_deploy(
     *,
     project,
@@ -523,7 +540,9 @@ def cmd_deploy(
     agent_identity,
     update_env_vars,
     iap,
+    ingress,
     port,
+    framework,
     memory,
     cpu,
     min_instances,
@@ -555,7 +574,7 @@ def cmd_deploy(
     \b
     Dispatches by deployment target configured in agents-cli-manifest.yaml:
       agent_runtime → Agent Runtime deployment
-      cloud_run    → gcloud beta run deploy
+      cloud_run    → gcloud run deploy
       gke          → terraform + docker build + kubectl apply
 
     \b
@@ -674,6 +693,15 @@ def cmd_deploy(
         raise click.ClickException(
             "The --build-args flag is only supported for Agent Runtime deployments."
         )
+    # Checks the flag, not the resolved value, so a Cloud Run project can still
+    # record a framework.
+    if framework is not None and cfg.deployment_target != "agent_runtime":
+        raise click.ClickException(
+            "The --framework flag is only supported for Agent Runtime "
+            f"deployments (current target: {cfg.deployment_target}); Cloud Run "
+            "and GKE record no framework."
+        )
+    framework = cfg.framework if framework is None else framework
     if image and cfg.deployment_target == "agent_runtime":
         raise click.ClickException(
             "The --image flag is only supported for Cloud Run and GKE deployments. "
@@ -682,6 +710,11 @@ def cmd_deploy(
     if timeout is not None and cfg.deployment_target != "cloud_run":
         raise click.ClickException(
             "The --timeout flag is only supported for Cloud Run deployments "
+            f"(current target: {cfg.deployment_target})."
+        )
+    if ingress is not None and cfg.deployment_target != "cloud_run":
+        raise click.ClickException(
+            "The --ingress flag is only supported for Cloud Run deployments "
             f"(current target: {cfg.deployment_target})."
         )
 
@@ -783,6 +816,7 @@ def cmd_deploy(
             agent_gateway_ingress=agent_gateway_ingress,
             build_args=build_args,
             port=port,
+            framework=framework,
             cpu=cpu,
             memory=memory,
             min_instances=min_instances,
@@ -832,6 +866,8 @@ def cmd_deploy(
         args.append("--no-cpu-throttling")
         if timeout is not None:
             args.extend(["--timeout", str(timeout)])
+        if ingress:
+            args.extend(["--ingress", ingress])
         if port:
             args.extend(["--port", str(port)])
         if iap:
@@ -1366,9 +1402,9 @@ def _list_agent_runtime_deployments(project: str | None, location: str) -> None:
 
     for agent in agents:
         res = agent.api_resource
-        display_name = getattr(res, "display_name", None) or "—"
-        name = getattr(res, "name", None) or "—"
-        create_time = getattr(res, "create_time", None)
+        display_name = (res.display_name if res else None) or "—"
+        name = (res.name if res else None) or "—"
+        create_time = res.create_time if res else None
         time_str = create_time.strftime("%Y-%m-%d %H:%M") if create_time else "—"
         table.add_row(display_name, name, time_str)
 

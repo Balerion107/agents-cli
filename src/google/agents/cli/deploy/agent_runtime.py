@@ -43,7 +43,6 @@ from agentplatform._genai.types import (
     ReasoningEngineSpecDeploymentSpecAgentGatewayConfig,
     ReasoningEngineSpecDeploymentSpecAgentGatewayConfigAgentToAnywhereConfig,
     ReasoningEngineSpecDeploymentSpecAgentGatewayConfigClientToAgentConfig,
-    UpdateAgentEngineConfigDict,
 )
 from google.cloud import resourcemanager_v3
 from google.genai.errors import APIError
@@ -51,6 +50,7 @@ from google.iam.v1 import iam_policy_pb2, policy_pb2
 
 from google.agents.cli._agent_platform import AgentPlatformClient
 from google.agents.cli._project import (
+    DEFAULT_FRAMEWORK,
     ProjectConfig,
     find_project_root,
     scaffold_older_than,
@@ -60,6 +60,7 @@ from google.agents.cli.deploy._operation import (
     METADATA_FILE,
     clear_operation,
     read_operation,
+    read_remote_agent_runtime_id,
     write_operation,
 )
 from google.agents.cli.deploy._utils import (
@@ -180,21 +181,21 @@ def _build_runtime_env_vars(
     return env_vars
 
 
-def _existing_plain_env_vars(agent: Any) -> dict[str, str]:
+def _existing_plain_env_vars(agent: AgentEngine) -> dict[str, str]:
     """Plain env vars on a deployed Agent Runtime, as ``{name: value}``.
 
     An update replaces the whole ``deployment_spec.env`` block, so re-sending
     these preserves vars set outside this deploy. Secrets are skipped: the API
     only touches them when secrets are supplied.
     """
-    spec = getattr(agent.api_resource, "spec", None)
-    deployment_spec = getattr(spec, "deployment_spec", None) if spec else None
-    env = getattr(deployment_spec, "env", None) if deployment_spec else None
+    api_resource = agent.api_resource
+    spec = api_resource.spec if api_resource else None
+    deployment_spec = spec.deployment_spec if spec else None
+    env = deployment_spec.env if deployment_spec else None
     result: dict[str, str] = {}
     for var in env or []:
-        name = getattr(var, "name", None)
-        if name:
-            result[name] = getattr(var, "value", "") or ""
+        if var.name:
+            result[var.name] = var.value or ""
     return result
 
 
@@ -227,13 +228,13 @@ def _resolve_identity_type(
     if agent_identity is True:
         return IdentityType.AGENT_IDENTITY
     elif agent_identity is False:
-        return IdentityType.IDENTITY_TYPE_UNSPECIFIED
+        return IdentityType.SERVICE_ACCOUNT
     else:
         # On update, None means "no change", on create it's "do not use Agent Identity"
         if is_updating:
             return None
         else:
-            return IdentityType.IDENTITY_TYPE_UNSPECIFIED
+            return IdentityType.SERVICE_ACCOUNT
 
 
 def _get_resource_name_from_operation(operation_name: str) -> str:
@@ -258,12 +259,14 @@ def build_agent_engine_logs_url(operation_name: str, project: str) -> str:
 
 
 def write_deployment_metadata(
-    remote_agent: Any,
+    remote_agent: AgentEngine,
     cfg: ProjectConfig,
 ) -> None:
     """Write deployment metadata to file."""
+    api_resource = remote_agent.api_resource
+    assert api_resource is not None, "deployed agent has no api_resource"
     metadata = {
-        "remote_agent_runtime_id": remote_agent.api_resource.name,
+        "remote_agent_runtime_id": api_resource.name,
         "deployment_target": "agent_runtime",
         "is_a2a": cfg.is_a2a,
         "language": cfg.language,
@@ -278,20 +281,22 @@ def write_deployment_metadata(
 
 
 def print_deployment_success(
-    remote_agent: Any,
+    remote_agent: AgentEngine,
     location: str,
     project: str,
     cfg: ProjectConfig,
 ) -> None:
     """Print deployment success message with console URL."""
-    resource_name_parts = remote_agent.api_resource.name.split("/")
+    api_resource = remote_agent.api_resource
+    assert api_resource is not None, "deployed agent has no api_resource"
+    resource_name = api_resource.name
+    assert resource_name is not None, "deployed agent has no resource name"
+    resource_name_parts = resource_name.split("/")
     agent_runtime_id = resource_name_parts[-1]
 
     if cfg.is_a2a:
         print("\n✅ Deployment successful!")
-        passthrough_url = build_agent_runtime_passthrough_url(
-            location, remote_agent.api_resource.name
-        )
+        passthrough_url = build_agent_runtime_passthrough_url(location, resource_name)
         a2a_path_factory: Callable[[str], str] | None = get_language_config(
             cfg.language
         ).get("a2a_base_path_factory")
@@ -309,10 +314,10 @@ def print_deployment_success(
     else:
         print("\n✅ Deployment successful!")
 
-    print(f"Agent Runtime ID: {remote_agent.api_resource.name}")
+    print(f"Agent Runtime ID: {resource_name}")
 
-    spec = getattr(remote_agent.api_resource, "spec", None)
-    identity = getattr(spec, "effective_identity", None) if spec else None
+    spec = api_resource.spec
+    identity = spec.effective_identity if spec else None
     if _is_agent_identity_principal(identity):
         print(f"Agent Identity: principal://{identity}")
     else:
@@ -335,10 +340,11 @@ AGENT_IDENTITY_ROLES = (
 )
 
 
-def grant_agent_identity_roles(project: str, agent: Any) -> None:
+def grant_agent_identity_roles(project: str, agent: AgentEngine) -> None:
     """Grant the baseline project roles to an agent's own principal."""
-    spec = getattr(agent.api_resource, "spec", None)
-    effective_identity = getattr(spec, "effective_identity", None) if spec else None
+    api_resource = agent.api_resource
+    spec = api_resource.spec if api_resource else None
+    effective_identity = spec.effective_identity if spec else None
     if not _is_agent_identity_principal(effective_identity):
         logging.warning(
             "The agent's effective identity is '%s', not an Agent Identity "
@@ -364,7 +370,7 @@ def grant_agent_identity_roles(project: str, agent: Any) -> None:
     click.echo("  ✅ Agent identity ready")
 
 
-def setup_agent_identity(client: Any, project: str, display_name: str) -> Any:
+def setup_agent_identity(client: Any, project: str, display_name: str) -> AgentEngine:
     """Create an agent first, so we know which principal should be granted the IAM roles."""
     click.echo(f"\n🔧 Creating agent identity for: {display_name}")
     agent = client.agent_engines.create(
@@ -565,6 +571,62 @@ CLASS_METHODS_BUILDERS: dict[str, Callable[[], list[dict[str, str]]] | None] = {
 }
 
 
+def _resolve_target_agent(
+    client: AgentPlatformClient,
+    display_name: str,
+) -> list[Any]:
+    """Resolve the target agent engine by ID or display name.
+
+    Target resolution:
+    1. Prefer the ID recorded in metadata.
+    2. If it does not exist, fall back to listing by display_name, but only if unambiguous.
+    """
+    target_id = read_remote_agent_runtime_id()
+
+    matching_agents: list[Any] = []
+
+    if target_id:
+        try:
+            # get() guarantees full env/resource_limits are populated
+            existing = client.agent_engines.get(name=target_id)
+            # If the engine was found but its display name was changed out of band, warn or fail?
+            # Issue requests: "Before mutation, validate its project number, location, deployment target, resource name, and actual display name. Reject stale or inconsistent metadata."
+            if existing.api_resource.display_name != display_name:
+                raise click.ClickException(
+                    f"Agent Runtime '{target_id}' has display name "
+                    f"'{existing.api_resource.display_name}', but expected '{display_name}'.\n"
+                    "  If this is correct, pass the correct --service-name.\n"
+                    f"  If the metadata in {METADATA_FILE} is stale, delete it and try again."
+                )
+            matching_agents = [existing]
+        except APIError as e:
+            if e.code == 404:
+                raise click.ClickException(
+                    f"Agent Runtime '{target_id}' not found.\n"
+                    f"  The resource recorded in {METADATA_FILE} may have been deleted.\n"
+                    "  Delete the metadata file to deploy a new engine, or check your permissions."
+                ) from e
+            raise click.ClickException(
+                f"Error reading Agent Runtime '{target_id}': {e}"
+            ) from e
+    else:
+        # Fall back to display_name scan
+        existing_agents = list(client.agent_engines.list())
+        matching_agents = [
+            agent
+            for agent in existing_agents
+            if agent.api_resource.display_name == display_name
+        ]
+        if len(matching_agents) > 1:
+            raise click.ClickException(
+                f"Found {len(matching_agents)} Agent Runtime engines named '{display_name}'.\n"
+                "  A display-name update is ambiguous. Delete the duplicates or "
+                f"ensure the correct resource ID is recorded in {METADATA_FILE}."
+            )
+
+    return matching_agents
+
+
 def deploy_agent_runtime(
     *,
     cfg: ProjectConfig,
@@ -590,6 +652,7 @@ def deploy_agent_runtime(
     agent_gateway_ingress: str | None = None,
     build_args: str | None = None,
     port: int | None = None,
+    framework: str = DEFAULT_FRAMEWORK,
 ) -> AgentEngine | None:
     """Deploy the agent to Vertex AI Agent Runtime.
 
@@ -625,6 +688,9 @@ def deploy_agent_runtime(
             with the same three states as ``agent_gateway_egress``.
         build_args: Comma-separated KEY=VALUE build args.
         port: Container port.
+        framework: Framework label recorded on the deployment. The Console
+            reads it to pick a playground, and it selects which runtime
+            contract the deployment declares.
 
     Returns:
         The deployed AgentEngine instance, or None when no_wait is True.
@@ -684,15 +750,7 @@ def deploy_agent_runtime(
     )
     agentplatform.init(project=project, location=location)
 
-    # Check for existing agent
-    # TODO: b/555644474 - select by resource ID; a display name is not unique,
-    # so more than one match is possible and this silently takes the first.
-    existing_agents = list(client.agent_engines.list())
-    matching_agents = [
-        agent
-        for agent in existing_agents
-        if agent.api_resource.display_name == display_name
-    ]
+    matching_agents = _resolve_target_agent(client, display_name)
 
     # Pre-existence flag must be computed before setup_agent_identity: that call
     # creates a bare identity agent (no deployment spec), but it's still a
@@ -730,16 +788,18 @@ def deploy_agent_runtime(
     migrates_to_agent_identity = False
 
     if matching_agents:
-        resource_name = matching_agents[0].api_resource.name
+        matching_api_resource = matching_agents[0].api_resource
+        assert matching_api_resource is not None, "listed agent has no api_resource"
+        resource_name = matching_api_resource.name
         # list() may return a summary without deployment_spec; get() guarantees
         # the full env/resource_limits are populated.
         existing = client.agent_engines.get(name=resource_name)
-        existing_spec = getattr(existing.api_resource, "spec", None)
+        existing_spec = existing.api_resource.spec
         migrates_to_agent_identity = (
             agent_identity
             and is_update
             and not _is_agent_identity_principal(
-                getattr(existing_spec, "effective_identity", None)
+                existing_spec.effective_identity if existing_spec else None
             )
         )
         # Preserve env vars set outside this deploy; CLI/user values still win.
@@ -762,18 +822,10 @@ def deploy_agent_runtime(
         # are None a plain redeploy must omit resource_limits to preserve the live
         # value — only fill when exactly one side was explicitly supplied.
         if (cpu is None) ^ (memory is None):
-            dep = getattr(existing.api_resource.spec, "deployment_spec", None)
-            limits = getattr(dep, "resource_limits", None) or {}
-            existing_cpu = (
-                limits.get("cpu")
-                if isinstance(limits, dict)
-                else getattr(limits, "cpu", None)
-            )
-            existing_memory = (
-                limits.get("memory")
-                if isinstance(limits, dict)
-                else getattr(limits, "memory", None)
-            )
+            dep = existing_spec.deployment_spec if existing_spec else None
+            limits = (dep.resource_limits if dep else None) or {}
+            existing_cpu = limits.get("cpu")
+            existing_memory = limits.get("memory")
             cpu = cpu if cpu is not None else existing_cpu
             memory = memory if memory is not None else existing_memory
             if cpu is None or memory is None:
@@ -871,15 +923,15 @@ def deploy_agent_runtime(
         image_spec_dict["build_args"] = build_args_dict
     config_kwargs["image_spec"] = image_spec_dict
 
-    # The Console uses agent_framework to decide which playground to render.
-    # The unified app is a google-adk container (it serves the native ADK
-    # reasoning_engine contract), matching the terraform deploy path.
-    config_kwargs["agent_framework"] = "google-adk"
-
-    class_methods_builder = dispatch_language(
-        "deploy", CLASS_METHODS_BUILDERS, cfg.language
-    )
-    config_kwargs["class_methods"] = class_methods_builder()
+    # The Console reads agent_framework to decide which playground to render.
+    config_kwargs["agent_framework"] = framework
+    if framework == DEFAULT_FRAMEWORK:
+        # An `agent_engines.get()` client turns these into Python methods, so
+        # only declare them for the container that serves the ADK contract.
+        class_methods_builder = dispatch_language(
+            "deploy", CLASS_METHODS_BUILDERS, cfg.language
+        )
+        config_kwargs["class_methods"] = class_methods_builder()
 
     if psc_interface_config is not None:
         config_kwargs["psc_interface_config"] = psc_interface_config
@@ -969,7 +1021,7 @@ def _create_api_config(
     action: str,
     agent_gateway_egress: str | None,
     agent_gateway_ingress: str | None,
-) -> UpdateAgentEngineConfigDict:
+) -> dict[str, Any]:
     """Create a config for create/update operations with a patched update mask."""
     api_config = client.agent_engines._create_config(
         mode=action,

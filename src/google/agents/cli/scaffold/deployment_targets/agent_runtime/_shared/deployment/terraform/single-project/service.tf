@@ -23,8 +23,9 @@ resource "google_vertex_ai_reasoning_engine" "app" {
   project      = var.project_id
 
   spec {
-    agent_framework = "google-adk"
+    agent_framework = var.agent_framework
     service_account = google_service_account.app_sa.email
+    identity_type   = "SERVICE_ACCOUNT"
 
     deployment_spec {
       min_instances         = 1

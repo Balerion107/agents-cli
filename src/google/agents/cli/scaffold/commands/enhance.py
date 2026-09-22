@@ -35,7 +35,7 @@ from google.agents.cli._tools import ToolNotFoundError, require_tool
 
 from ..utils import remote_template
 from ..utils.backup import make_backup_pre_apply_hook
-from ..utils.cli_options import shared_template_options
+from ..utils.cli_options import InteractionMode, shared_template_options
 from ..utils.generation_metadata import metadata_to_cli_args
 from ..utils.language import (
     find_agent_file,
@@ -281,11 +281,10 @@ def _execute_with_saved_config(
 def check_and_execute_with_saved_config(
     *,
     project_dir: pathlib.Path,
-    auto_approve: bool = False,
+    mode: InteractionMode,
     cli_overrides: dict[str, Any] | None = None,
     force: bool = False,
     dry_run: bool = False,
-    interactive: bool = False,
 ) -> bool | dict[str, Any]:
     """Check for saved config and offer to reuse it.
 
@@ -295,11 +294,11 @@ def check_and_execute_with_saved_config(
 
     Args:
         project_dir: Path to the project directory
-        auto_approve: If True, skip confirmation prompt and use saved config
+        mode: Interaction mode; ``interactive`` shows the customize prompts,
+            ``auto_approve`` reuses saved config non-interactively.
         cli_overrides: CLI args to pass through (e.g., cicd_runner from original command)
         force: If True, include --force in subprocess args (skipped for old versions)
         dry_run: If True, include --dry-run in subprocess args (skipped for old versions)
-        interactive: If True, show interactive prompts
 
     Returns:
         True if config was used and executed successfully.
@@ -329,14 +328,14 @@ def check_and_execute_with_saved_config(
         display_params, project_version, current_version, use_different_version
     )
 
-    if interactive:
+    if mode.interactive:
         # Always go through interactive customization so the user can
         # configure params they haven't set yet (e.g., cicd_runner).
         # Pressing Enter on every prompt keeps current values.
         return _prompt_customize_overrides(project_config)
 
     # non-interactive mode: use saved config as-is via subprocess
-    args = build_args_from_config(project_config, auto_approve, cli_overrides)
+    args = build_args_from_config(project_config, mode.auto_approve, cli_overrides)
     # --force and --dry-run were introduced in this version; strip them
     # when re-executing against an older locked version to avoid crashes.
     is_older_version = (
@@ -706,10 +705,9 @@ def _run_smart_merge(
     project_dir: pathlib.Path,
     project_config: ProjectConfig,
     cli_overrides: dict[str, Any] | None,
-    auto_approve: bool,
+    mode: InteractionMode,
     dry_run: bool,
     prefer_new: bool = False,
-    interactive: bool = False,
 ) -> bool:
     """Run smart-merge using 3-way comparison.
 
@@ -721,7 +719,7 @@ def _run_smart_merge(
         project_dir: Path to the current project
         project_config: Saved ProjectConfig object from metadata
         cli_overrides: CLI arguments from the enhance command
-        auto_approve: If True, auto-apply non-conflicting changes
+        mode: Interaction mode controlling backup, confirm and conflict prompts
         dry_run: If True, preview changes without applying
         prefer_new: If True, resolve conflicts in favor of new template
 
@@ -741,8 +739,7 @@ def _run_smart_merge(
     # -- Pre-apply hook: back up the project before writing changes ----------
     backup_hook = make_backup_pre_apply_hook(
         console=console,
-        auto_approve=auto_approve,
-        interactive=interactive,
+        mode=mode,
     )
 
     # -- Post-apply hook: update manifest with new config --------------------
@@ -777,10 +774,9 @@ def _run_smart_merge(
         language=language,
         old_args=old_args,
         new_args=new_args,
-        auto_approve=auto_approve,
+        mode=mode,
         dry_run=dry_run,
         prefer_new=prefer_new,
-        interactive=interactive,
         operation_label="enhancement",
         pre_apply_hook=backup_hook,
         post_apply_hook=_update_metadata,
@@ -883,6 +879,8 @@ def enhance(
     if not skip_welcome:
         display_welcome_banner(enhance_mode=True, quiet=auto_approve)
 
+    mode = InteractionMode(interactive=interactive, auto_approve=auto_approve)
+
     # Check for saved config and offer to reuse it
     # This handles both version locking AND reusing previous settings
     current_dir = pathlib.Path.cwd()
@@ -944,10 +942,9 @@ def enhance(
                 # Show saved config, prompt y/customize
                 saved_config_result = check_and_execute_with_saved_config(
                     project_dir=current_dir,
-                    auto_approve=auto_approve,
+                    mode=mode,
                     cli_overrides=cli_override_args,
                     dry_run=dry_run,
-                    interactive=interactive,
                 )
                 if saved_config_result is True:
                     return  # "y" → subprocess executed
@@ -969,9 +966,8 @@ def enhance(
                 # Use saved config subprocess
                 if check_and_execute_with_saved_config(
                     project_dir=current_dir,
-                    auto_approve=auto_approve,
+                    mode=mode,
                     cli_overrides=cli_override_args,
-                    interactive=interactive,
                 ):
                     return
 
@@ -982,10 +978,9 @@ def enhance(
                 project_dir=current_dir,
                 project_config=project_config,
                 cli_overrides=effective_overrides,
-                auto_approve=auto_approve,
+                mode=mode,
                 dry_run=dry_run,
                 prefer_new=prefer_new,
-                interactive=interactive,
             ):
                 return
             # If smart-merge returned False, fall through to brute-force
@@ -1008,10 +1003,9 @@ def enhance(
             # --force: try saved config subprocess
             saved_config_result = check_and_execute_with_saved_config(
                 project_dir=current_dir,
-                auto_approve=auto_approve,
+                mode=mode,
                 cli_overrides=cli_override_args,
                 force=force,
-                interactive=interactive,
             )
             if saved_config_result is True:
                 return
@@ -1026,10 +1020,9 @@ def enhance(
                     project_dir=current_dir,
                     project_config=project_config,
                     cli_overrides=None,
-                    auto_approve=auto_approve,
+                    mode=mode,
                     dry_run=False,
                     prefer_new=prefer_new,
-                    interactive=interactive,
                 ):
                     return
 

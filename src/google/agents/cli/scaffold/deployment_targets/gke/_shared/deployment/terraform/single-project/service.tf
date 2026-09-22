@@ -15,8 +15,8 @@
 
 {%- if cookiecutter.session_type == "cloud_sql" %}
 
-# Generate a random password for the database user
-resource "random_password" "db_password" {
+# Ephemeral so the generated password is never persisted to Terraform state.
+ephemeral "random_password" "db_password" {
   length           = 16
   special          = true
   override_special = "!#$%&*()-_=+[]{}<>:?"
@@ -59,7 +59,12 @@ resource "google_sql_user" "db_user" {
   project  = var.project_id
   name     = "${var.project_name}" # Use project name for user to avoid conflict with default 'postgres'
   instance = google_sql_database_instance.session_db.name
-  password = google_secret_manager_secret_version.db_password.secret_data
+
+  # Rotate by bumping password_wo_version, secret_data_wo_version and
+  # data_wo_revision together, then redeploying so running pods pick up the
+  # new password.
+  password_wo         = ephemeral.random_password.db_password.result
+  password_wo_version = 1
 }
 
 # Store the password in Secret Manager
@@ -75,8 +80,9 @@ resource "google_secret_manager_secret" "db_password" {
 }
 
 resource "google_secret_manager_secret_version" "db_password" {
-  secret      = google_secret_manager_secret.db_password.id
-  secret_data = random_password.db_password.result
+  secret                 = google_secret_manager_secret.db_password.id
+  secret_data_wo         = ephemeral.random_password.db_password.result
+  secret_data_wo_version = 1
 }
 
 resource "kubernetes_secret_v1" "db_password" {
@@ -84,10 +90,11 @@ resource "kubernetes_secret_v1" "db_password" {
     name      = "${var.project_name}-db-password"
     namespace = kubernetes_namespace_v1.app.metadata[0].name
   }
-  data = {
-    password = random_password.db_password.result
+  data_wo = {
+    password = ephemeral.random_password.db_password.result
   }
-  depends_on = [kubernetes_namespace_v1.app]
+  data_wo_revision = 1
+  depends_on       = [kubernetes_namespace_v1.app]
 }
 
 {%- endif %}

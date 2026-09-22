@@ -152,3 +152,11 @@ variable "create_repository" {
 }
 {% endif %}
 
+{%- if cookiecutter.deployment_target == "agent_runtime" %}
+
+variable "agent_framework" {
+  description = "Framework label on the Agent Runtime deployment. The Google Cloud console reads it to pick a playground; override it when the container is not an ADK app."
+  type        = string
+  default     = "{{cookiecutter.framework}}"
+}
+{%- endif %}

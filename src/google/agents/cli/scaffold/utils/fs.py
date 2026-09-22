@@ -21,6 +21,7 @@ import fnmatch
 STANDARD_IGNORE_PATTERNS = frozenset(
     {
         ".git",
+        ".hg",
         ".venv",
         "venv",
         "__pycache__",
@@ -65,6 +66,28 @@ SECRET_IGNORE_PATTERNS = frozenset({".env", ".env.*"})
 # `.env.*` would otherwise take the documentation along with the secret. These
 # hold no values, and a source that ships one means it to be read.
 ENV_TEMPLATE_NAMES = frozenset({".env.example", ".env.sample", ".env.template"})
+
+
+def is_ignored_name(name: str) -> bool:
+    """True if *name* matches a ``STANDARD_IGNORE_PATTERNS`` entry.
+
+    These are the version-control metadata, caches, build output, and
+    dependency directories a copied tree never carries. Also used to refuse a
+    symlink whose resolved target sits inside one of them.
+    """
+    return bool(_matching([name], STANDARD_IGNORE_PATTERNS))
+
+
+def is_secret_file(name: str) -> bool:
+    """True if *name* is a credential file that must not be copied elsewhere.
+
+    Matches a ``.env`` / ``.env.*`` file (see ``SECRET_IGNORE_PATTERNS``) but
+    excludes the value-less env templates (``.env.example`` and friends), which
+    hold no secrets and are meant to be shared.
+    """
+    if name in ENV_TEMPLATE_NAMES:
+        return False
+    return bool(_matching([name], SECRET_IGNORE_PATTERNS))
 
 
 def source_ignore_patterns(dir: str, files: list[str]) -> set[str]:
