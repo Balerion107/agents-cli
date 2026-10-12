@@ -175,7 +175,10 @@ def _prune_dead_links(target_root: Path, source_root: Path) -> None:
 
 
 def link_skills_for_antigravity(
-    *, home: Path | None = None, skills_dir: Path | None = None
+    *,
+    home: Path | None = None,
+    skills_dir: Path | None = None,
+    warn_if_empty: bool = True,
 ) -> list[str]:
     """Link each canonical global skill into Antigravity's skill directories.
 
@@ -206,7 +209,7 @@ def link_skills_for_antigravity(
         for d in sorted(source_root.iterdir())
         if d.is_dir() and (d / "SKILL.md").is_file()
     ]
-    if not skill_dirs:
+    if not skill_dirs and warn_if_empty:
         # Same expectation as above: npx just ran, so an empty store is surprising.
         # Fall through so dead links from previously-linked skills still get pruned.
         logging.warning(

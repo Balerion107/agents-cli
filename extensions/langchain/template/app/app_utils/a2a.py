@@ -133,7 +133,7 @@ def _agent_card() -> AgentCard:
                 protocol_binding="JSONRPC",
                 protocol_version=PROTOCOL_VERSION_1_0,
             ),
-            # Gemini Enterprise's validator still requires the 0.3 card shape.
+            # Gemini's registration validator still requires the 0.3 card shape.
             AgentInterface(
                 url=rpc_url,
                 protocol_binding="JSONRPC",

@@ -42,8 +42,8 @@ The loop expands to eight phases when you walk through it slowly. Each phase has
 | 2 | **Build** | Write the agent body — model, instruction, tools, `App` wrapper. | — | `google-agents-cli-adk-code` | [Project Structure](project-structure.md) |
 | 3 | **Orchestrate** | Compose specialists when one agent grows into a team. | — | `google-agents-cli-adk-code` | [Project Structure](project-structure.md) |
 | 4 | **Evaluate** | Score the agent against a dataset before every deploy. | `eval run` (or `eval generate` + `eval grade`), plus `eval dataset synthesize`, `eval compare`, `eval analyze`, `eval metric list`, and `eval optimize` | `google-agents-cli-eval` | [Evaluation](evaluation.md) |
-| 5 | **Deploy** | Ship to Agent Runtime, Cloud Run, or GKE. | `deploy` | `google-agents-cli-deploy` | [Deployment](deployment.md) |
-| 6 | **Publish** | Register with Gemini Enterprise so other agents can find this one. | `publish` | `google-agents-cli-publish` | [CI/CD](cicd.md) |
+| 5 | **Deploy** | Ship to Agent Runtime in Gemini platform, Cloud Run, or GKE. | `deploy` | `google-agents-cli-deploy` | [Deployment](deployment.md) |
+| 6 | **Publish** | Register with Gemini so other agents can find this one. | `publish` | `google-agents-cli-publish` | [CI/CD](cicd.md) |
 | 7 | **Observe** | Cloud Trace + BigQuery analytics; production data feeds tomorrow's dataset. | — | `google-agents-cli-observability` | [Observability](observability/index.md) |
 
 ### 0 · Spec
@@ -105,7 +105,7 @@ app = App(root_agent=root_agent, name="app")
 
 You're not locked to Gemini — swap the model line for any provider supported by ADK ([Model Garden](https://cloud.google.com/model-garden) covers Anthropic Claude, OpenAI GPT, and others). The rest of the lifecycle behaves the same regardless.
 
-Stateful agents reach for two more pieces of Agent Platform:
+Stateful agents reach for two more pieces of Gemini platform:
 
 - **Managed session storage** for conversation state that survives restarts and scales horizontally — pick it at scaffold time via `--session-type agent_platform_sessions` instead of the in-memory default.
 - **[Memory Bank](https://cloud.google.com/agent-builder/docs/memory)** for *long-term* memory across sessions (the SRE bot recognizing "this looks like that incident from last quarter"). Wire it in via `from google.adk.memory import VertexAiMemoryBankService` and the agent gets a persistent store keyed to user, session, or app.
@@ -162,9 +162,9 @@ See [Deployment](deployment.md) for full per-target walkthroughs.
 
 ### 6 · Publish
 
-Deploying the agent makes it reachable at a URL. Publishing is the separate step that lists it in Gemini Enterprise so other agents (or humans browsing the catalog) can actually find it.
+Deploying the agent makes it reachable at a URL. Publishing is the separate step that lists it in Gemini so other agents (or humans browsing the catalog) can actually find it.
 
-<div id="lifecycle-anim-publish" class="lifecycle-anim" aria-label="The agent's listing in Gemini Enterprise after publish"></div>
+<div id="lifecycle-anim-publish" class="lifecycle-anim" aria-label="The agent's listing in Gemini after publish"></div>
 
 Two registration modes: **ADK** (publishes a deployed Agent Runtime instance) and **[A2A](https://a2a-protocol.org/)** (publishes an A2A-compatible HTTP endpoint, no ADK required — works with agents built on any framework).
 
@@ -234,7 +234,7 @@ See [Observability](observability/index.md) for the full setup.
     agents-cli deploy
 
     # Phase 6: publish (optional)
-    agents-cli publish gemini-enterprise
+    agents-cli publish gemini
     ```
 
     See the [Manual Workflow Tutorial](hands-on-tutorial.md) for the full end-to-end walkthrough.

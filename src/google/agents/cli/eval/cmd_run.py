@@ -80,7 +80,7 @@ from google.agents.cli.eval.cmd_grade import cmd_grade, qps_option
     "--region",
     default=None,
     help=(
-        "GCP region for the Vertex eval service (grading). Inference reads "
+        "GCP region for the Eval Service in Gemini platform (grading). Inference reads "
         "GOOGLE_CLOUD_LOCATION from the agent's .env."
     ),
 )
@@ -206,7 +206,7 @@ def cmd_run(
         run_override(override, argv, display_path="eval generate")
     else:
         # generate trusts the agent's own .env for GCP config -- project/region are
-        # only meaningful for grading (the Vertex eval service), forwarded below.
+        # only meaningful for grading (the Eval Service), forwarded below.
         generate_cb(
             dataset=dataset,
             output=traces_file,

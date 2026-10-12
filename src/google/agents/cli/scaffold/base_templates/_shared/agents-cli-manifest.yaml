@@ -1,21 +1,23 @@
-name: '{{cookiecutter.project_name}}'
-acli_version: '{{cookiecutter.package_version}}'
-agent_directory: '{{cookiecutter.agent_directory}}'
+name: {{cookiecutter.project_name | tojson}}
+acli_version: {{cookiecutter.package_version | tojson}}
+agent_directory: {{cookiecutter.agent_directory | tojson}}
 region: 'us-east1'
-base_template: '{{cookiecutter.recorded_base_template}}'
-generated_at: '{{cookiecutter.generated_at}}'
-language: '{{cookiecutter.language or "python"}}'
-framework: '{{cookiecutter.framework}}'
+base_template: {{cookiecutter.recorded_base_template | tojson}}
+generated_at: {{cookiecutter.generated_at | tojson}}
+language: {{(cookiecutter.language or "python") | tojson}}
+framework: {{cookiecutter.framework | tojson}}
 create_params:
   # The ADK name of the root agent, as rendered into the agent source. Rename
   # the agent and you must change it in both places: telemetry reports this as
   # gen_ai.agent.name, and it is what agents-cli reports for the project.
-  root_agent_name: '{{cookiecutter.root_agent_name}}'
-  deployment_target: '{{cookiecutter.deployment_target}}'
-  session_type: '{{cookiecutter.session_type or "none"}}'
-  cicd_runner: '{{cookiecutter.cicd_runner}}'
+  root_agent_name: {{cookiecutter.root_agent_name | tojson}}
+  deployment_target: {{cookiecutter.deployment_target | tojson}}
+  session_type: {{(cookiecutter.session_type or "none") | tojson}}
+  cicd_runner: {{cookiecutter.cicd_runner | tojson}}
   {% if cookiecutter.is_a2a -%}
   is_a2a: true
   {%- endif %}
-  agent_gateway: {{cookiecutter.agent_gateway}}
-  agent_guidance_filename: '{{cookiecutter.agent_guidance_filename}}'
+  agent_gateway: {{cookiecutter.agent_gateway | tojson}}
+  agent_guidance_filename: {{cookiecutter.agent_guidance_filename | tojson}}
+  agent_runtime:
+    identity_default: {{cookiecutter.agent_runtime_identity_default | tojson}}

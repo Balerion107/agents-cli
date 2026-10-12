@@ -65,6 +65,7 @@ class LazyGroup(click.Group):
         # name -> experiment label
         self._experiment_gates: dict[str, str] = {}
         self._overrides: dict[str, click.Command] = {}
+        self._hidden: set[str] = set()
 
     def add_lazy_command(
         self,
@@ -72,6 +73,7 @@ class LazyGroup(click.Group):
         import_path: str,
         short_help: str,
         experiment: str | None = None,
+        hidden: bool = False,
     ) -> None:
         """Register a subcommand for lazy loading.
 
@@ -83,10 +85,20 @@ class LazyGroup(click.Group):
         not at this registration call: `main` is built once at import, so
         guarding registration would freeze visibility before a unit test could
         override the experiment.
+
+        `hidden` keeps a command invocable but out of --help and the docs, e.g.
+        an old name kept as an alias after a rename.
         """
         self._lazy_commands[name] = (import_path, short_help)
         if experiment is not None:
             self._experiment_gates[name] = experiment
+        if hidden:
+            self._hidden.add(name)
+
+    @property
+    def hidden_commands(self) -> frozenset[str]:
+        """Names registered with `hidden=True`: invocable, but not listed."""
+        return frozenset(self._hidden)
 
     def _is_visible(self, name: str) -> bool:
         """True if `name` is not hidden via experiment."""
@@ -100,7 +112,7 @@ class LazyGroup(click.Group):
             set(super().list_commands(ctx))
             | set(self._lazy_commands)
             | set(self._overrides)
-        )
+        ) - self._hidden
         return sorted(filter(self._is_visible, names))
 
     def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:

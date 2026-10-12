@@ -15,7 +15,7 @@ The agent is a compiled LangGraph graph exported as `root_agent` from
 this skill wins.
 
 **Experimental, and Agent Runtime is degraded.** Deploy to cloud_run or gke. On
-agent_runtime the app serves, but `publish gemini-enterprise` is refused, the Console
+agent_runtime the app serves, but `publish gemini` is refused, the Console
 playground cannot invoke it, and Console sessions/traces stay empty: all three want the
 ADK `reasoning_engine` routes this project does not serve. Say so before recommending it.
 
@@ -74,7 +74,7 @@ comes from `astream(stream_mode="messages")`.
 - Expecting `/run_sse` or ADK session routes; this server serves A2A.
 - Running `agents-cli run --url ...` against a deployed agent without
   `AGENTS_CLI_DISABLE_OVERRIDES=1`, which invokes the local graph instead.
-- `run` and `eval generate` call Gemini through Vertex AI with ADC, so they need
+- `run` and `eval generate` call Gemini on Gemini platform with ADC, so they need
   `GOOGLE_CLOUD_PROJECT` and credentials, or `GOOGLE_API_KEY` / `GEMINI_API_KEY`
   in `.env`.
 

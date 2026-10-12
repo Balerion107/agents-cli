@@ -1133,7 +1133,7 @@
       id:    "agent_runtime",
       label: "Agent Runtime",
       blurb: "Fastest path to prod. Sessions, eval, traces built-in.",
-      cmd:   "agents-cli deploy --dry-run\n  Would deploy to Agent Runtime: project=outage-recovery-prod, region=us-east1",
+      cmd:   "agents-cli deploy --dry-run\n  Would deploy to Agent Runtime in Gemini platform: project=outage-recovery-prod, region=us-east1",
       pipeline: [
         { tool: "uv build",                what: "package the agent into a Python wheel" },
         { tool: "vertexai.agent_engines",  what: "upload the wheel to a staging bucket" },
@@ -1228,7 +1228,7 @@
     host.innerHTML = "";
     host.classList.add("lc-publish");
 
-    host.appendChild(htmlEl("p", { class: "lc-mono lc-publish__eyebrow" }, "GEMINI ENTERPRISE · agent catalog"));
+    host.appendChild(htmlEl("p", { class: "lc-mono lc-publish__eyebrow" }, "GEMINI APP · agent catalog"));
     host.appendChild(htmlEl("h4", { class: "lc-publish__name" }, "outage-recovery-bot"));
     host.appendChild(htmlEl("p", { class: "lc-publish__sub" },
       "SRE-facing assistant. Investigates incidents using logs, metrics, and runbook RAG. Cites every recommendation."));
@@ -1247,7 +1247,7 @@
     host.appendChild(status);
 
     const cmd = htmlEl("pre", { class: "lc-publish__cmd" }, htmlEl("code", null,
-      "$ agents-cli publish gemini-enterprise --registration-type adk\n✅ Successfully registered agent to Gemini Enterprise!"));
+      "$ agents-cli publish gemini --registration-type adk\n✅ Successfully registered agent to Gemini!"));
     host.appendChild(cmd);
   }
 

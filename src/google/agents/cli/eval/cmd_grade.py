@@ -154,7 +154,7 @@ def _drop_content_less_events(eval_cases: list) -> int:
 @click.option(
     "--region",
     default=None,
-    help="GCP region for the Vertex eval service. Defaults to 'global'.",
+    help="GCP region for the Eval Service in Gemini platform. Defaults to 'global'.",
 )
 @qps_option
 def cmd_grade(
@@ -172,7 +172,7 @@ def cmd_grade(
     project_root = _project.find_project_root()
     # Load the project's .env (same approach as the eval runners) so local,
     # model-calling metrics (e.g. an LLM-judge via google-genai) pick up the
-    # configured backend -- GEMINI_API_KEY (AI Studio) or GOOGLE_CLOUD_* (Vertex).
+    # configured backend -- GEMINI_API_KEY (AI Studio) or GOOGLE_CLOUD_* (Gemini platform).
     load_eval_dotenv(project_root or Path.cwd())
 
     # Default config path in case one is not explicitly supplied
@@ -213,8 +213,8 @@ def cmd_grade(
     if remote_custom_count:
         console.print(
             f"[yellow]Loaded {remote_custom_count} remote custom metric(s) "
-            "(CodeExecutionMetric). These run server-side in a Vertex AI "
-            "sandbox and require a configured GCP project + region.[/yellow]"
+            "(CodeExecutionMetric). These run server-side in a sandbox in "
+            "Gemini platform and require a configured GCP project + region.[/yellow]"
         )
 
     console.print(f"Loading trace file(s) from [cyan]{traces_path}[/cyan]...")

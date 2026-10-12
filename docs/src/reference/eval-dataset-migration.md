@@ -1,6 +1,6 @@
 # Migrating Eval Datasets
 
-If you started using `agents-cli` before the eval surface was rebuilt around the [Gemini Enterprise Agent Platform GenAI Eval SDK](https://docs.cloud.google.com/gemini-enterprise-agent-platform/optimize/evaluation/agent-evaluation), you may have evaluation files under `tests/eval/evalsets/` using the older ADK `EvalSet` schema. Those files are no longer read by `agents-cli eval generate` or related commands. This page walks through converting them to the new format.
+If you started using `agents-cli` before the eval surface was rebuilt around the [GenAI Eval SDK in Gemini platform](https://docs.cloud.google.com/gemini-enterprise-agent-platform/optimize/evaluation/agent-evaluation), you may have evaluation files under `tests/eval/evalsets/` using the older ADK `EvalSet` schema. Those files are no longer read by `agents-cli eval generate` or related commands. This page walks through converting them to the new format.
 
 If your project doesn't have a `tests/eval/evalsets/` directory, you don't need to do anything.
 
@@ -16,13 +16,13 @@ If you'd rather do the conversion by hand, the rest of this page walks through t
 
 ## Why This Changed
 
-The new eval surface (`eval generate`, `eval grade`, `eval dataset synthesize`, `eval compare`, `eval analyze`, `eval metric list`, `eval optimize`) is built on the Gemini Enterprise Agent Platform GenAI Eval SDK's `EvaluationDataset` / `EvalCase` types. Adopting the platform's own schema unlocks the broader Agent Platform evaluation feature set — built-in and custom metrics, LLM-as-judge grading, dataset synthesis, regression comparison, failure-mode analysis, and prompt optimization — without `agents-cli` having to bridge between two different shapes of data.
+The new eval surface (`eval generate`, `eval grade`, `eval dataset synthesize`, `eval compare`, `eval analyze`, `eval metric list`, `eval optimize`) is built on the GenAI Eval SDK's `EvaluationDataset` / `EvalCase` types. Adopting the platform's own schema unlocks the broader Gemini platform evaluation feature set — built-in and custom metrics, LLM-as-judge grading, dataset synthesis, regression comparison, failure-mode analysis, and prompt optimization — without `agents-cli` having to bridge between two different shapes of data.
 
 ---
 
 ## What Changed at a Glance
 
-| | Old (ADK `EvalSet`) | New (Agent Platform `EvaluationDataset`) |
+| | Old (ADK `EvalSet`) | New (Gemini platform `EvaluationDataset`) |
 |---|---|---|
 | Directory | `tests/eval/evalsets/` | `tests/eval/datasets/` |
 | Filename | `*.evalset.json` | `*-dataset.json` |
@@ -101,7 +101,7 @@ Three changes per case:
 }
 ```
 
-Note the addition of `"role": "user"` on the prompt — required by the Agent Platform `Content` type.
+Note the addition of `"role": "user"` on the prompt — required by the Gemini platform `Content` type.
 
 ### Multi-Turn Case (Shape B)
 

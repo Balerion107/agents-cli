@@ -29,6 +29,7 @@ from typing import Any
 import yaml
 from filelock import FileLock, Timeout
 
+from google.agents.cli._fs import delete_folder, first_copy_error, make_folders_writable
 from google.agents.cli._runner import run_resolved
 from google.agents.cli.extension._paths import git_cache_dir_name, git_cache_root
 from google.agents.cli.extension._refs import ExtensionRef
@@ -140,6 +141,10 @@ class ResolverError(Exception):
     """Raised when an extension cannot be resolved or vendored."""
 
 
+class CopyChangedError(ResolverError):
+    """Raised when vendoring fails after it started to change the vendored copy."""
+
+
 def read_stamp(extension_dir: Path) -> str | None:
     """Return what an extension dir was materialized from, or None if unstamped."""
     stamp = extension_dir / STAMP_FILE
@@ -160,17 +165,17 @@ def expected_stamp(ref: ExtensionRef, sha: str) -> str:
     if ref.kind != "local":
         return sha
     src = _local_source_dir(ref)
-    return _fingerprint(src, _SourceExclusions(src, use_gitignore=True))
+    return fingerprint(src, _SourceExclusions(src, use_gitignore=True))
 
 
-def _fingerprint(root: Path, exclude: _SourceExclusions) -> str:
+def fingerprint(root: Path, exclude: Callable[[str, list[str]], set[str]]) -> str:
     """Return a hash of the name and contents of every file under ``root``.
 
     Walked in sorted order and keyed on POSIX-style relative paths, so a given
     tree hashes identically across runs and platforms.
 
     Hashes exactly what the copy would contain: symlinks are skipped (see
-    ``_skip_symlinks``) and so is everything ``exclude`` drops, files included —
+    ``skip_symlinks``) and so is everything ``exclude`` drops, files included —
     ``.env`` is a file, and hashing one the copy omits would make every edit to
     it force a re-copy that changes nothing.
 
@@ -179,6 +184,8 @@ def _fingerprint(root: Path, exclude: _SourceExclusions) -> str:
     ``stat`` per name. An unreadable directory raises rather than being skipped,
     since a tree walked only in part hashes the same after a change inside the
     part that was missed.
+
+    Raises ResolverError when a folder or file under ``root`` cannot be read.
     """
     digest = hashlib.sha256()
     # (directory, its POSIX path relative to root). A stack, so a deep source
@@ -282,7 +289,7 @@ def _extension_name_from_dir(extension_dir: Path, fallback: str) -> str:
     return fallback
 
 
-def _skip_symlinks(directory: str, names: list[str]) -> set[str]:
+def skip_symlinks(directory: str, names: list[str]) -> set[str]:
     """Names in ``directory`` that are symlinks, for ``copytree(ignore=...)``."""
     skipped = {n for n in names if Path(directory, n).is_symlink()}
     for name in sorted(skipped):
@@ -296,33 +303,49 @@ def _ignored_names(
     """Return the ``copytree(ignore=...)`` callback for an extension source."""
 
     def ignore(directory: str, names: list[str]) -> set[str]:
-        return _skip_symlinks(directory, names) | exclude(directory, names)
+        return skip_symlinks(directory, names) | exclude(directory, names)
 
     return ignore
 
 
 def _replace_tree(src: Path, dest: Path, exclude: _SourceExclusions) -> None:
-    """Replace ``dest`` with a copy of ``src``, leaving it alone if the copy fails."""
+    """Replace ``dest`` with a copy of ``src``.
+
+    Leaves ``dest`` alone unless the swap itself fails; then raises
+    CopyChangedError.
+    """
+    if dest.is_symlink():
+        raise ResolverError(f"{dest} is a symlink, so it cannot be replaced.")
     # Copy alongside and swap, so an unreadable source cannot delete the working
     # copy on its way to failing. shutil.Error is an OSError.
     staged = dest.parent / f".{dest.name}.incoming"
     try:
-        shutil.rmtree(staged, ignore_errors=True)
+        delete_folder(staged)
         # Never follow symlinks out of an extension: copytree would otherwise
         # dereference `notes.md -> ~/.ssh/id_rsa` into a real file in the
         # project, where it gets committed (CWE-59).
         shutil.copytree(src, staged, ignore=_ignored_names(exclude))
+    except OSError as e:
+        delete_folder(staged)
+        message = f"could not copy {src} into {dest}: {first_copy_error(e)}"
+        raise ResolverError(message) from e
+    try:
         if dest.exists():
+            make_folders_writable(dest)
             shutil.rmtree(dest)
         staged.rename(dest)
     except OSError as e:
-        shutil.rmtree(staged, ignore_errors=True)
-        raise ResolverError(f"could not copy {src} into {dest}: {e}") from e
+        delete_folder(staged)
+        message = f"could not copy {src} into {dest}: {first_copy_error(e)}"
+        raise CopyChangedError(message) from e
 
 
 def _write_stamp(extension_dir: Path, sha: str) -> None:
     """Record the SHA the copy was materialized from (written last, post-copy)."""
-    (extension_dir / STAMP_FILE).write_text(sha, encoding="utf-8")
+    try:
+        (extension_dir / STAMP_FILE).write_text(sha, encoding="utf-8")
+    except OSError as e:
+        raise CopyChangedError(f"could not stamp {extension_dir}: {e}") from e
 
 
 def materialize(
@@ -355,7 +378,7 @@ def materialize(
         # Fingerprinted before the copy, so a source edited while it is being
         # copied leaves the older stamp and the next sync redoes the copy,
         # rather than blessing a tree that is half of each.
-        stamp = _fingerprint(sub, exclude)
+        stamp = fingerprint(sub, exclude)
         _replace_tree(sub, extension_dir, exclude)
         _write_stamp(extension_dir, stamp)
         return resolved_name, extension_dir

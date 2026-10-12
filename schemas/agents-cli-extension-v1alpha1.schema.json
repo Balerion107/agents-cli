@@ -104,6 +104,21 @@
       },
       "title": "Requires",
       "type": "object"
+    },
+    "SkillEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "SkillEntry",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -162,6 +177,24 @@
       "anyOf": [
         {
           "$ref": "#/$defs/Commands"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "skills": {
+      "title": "Skills",
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/SkillEntry"
+          },
+          "propertyNames": {
+            "maxLength": 64,
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          },
+          "type": "object"
         },
         {
           "type": "null"

@@ -1,6 +1,6 @@
 # Evaluation Guide
 
-Run structured evaluations to confirm your agent calls the right tools, produces quality responses, and handles edge cases. Under the hood, evaluation uses the [Gemini Enterprise Agent Platform GenAI Eval SDK](https://docs.cloud.google.com/gemini-enterprise-agent-platform/optimize/evaluation/agent-evaluation) to grade evaluations.
+Run structured evaluations to confirm your agent calls the right tools, produces quality responses, and handles edge cases. Under the hood, evaluation uses the [GenAI Eval SDK in Gemini platform](https://docs.cloud.google.com/gemini-enterprise-agent-platform/optimize/evaluation/agent-evaluation) to grade evaluations.
 
 !!! note "Upgrading from an older agents-cli?"
     If your project still has `tests/eval/evalsets/*.evalset.json` files from a previous version, see [Migrating Eval Datasets](../reference/eval-dataset-migration.md) for the new format.
@@ -36,7 +36,7 @@ agents-cli eval grade --metrics general_quality --traces custom_traces/
 
 ## Writing Eval Cases and Choosing Metrics
 
-For full documentation on eval case schemas and available metrics, see the [Gemini Enterprise Agent Platform Evaluation documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/optimize/evaluation/agent-evaluation).
+For full documentation on eval case schemas and available metrics, see the [Gemini platform evaluation documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/optimize/evaluation/agent-evaluation).
 
 ### Available Metrics Reference
 
@@ -99,7 +99,7 @@ custom_metrics:
 ```
 
 Each custom metric must conform to either the **Code Execution Metric** or **LLM-as-a-Judge Metric** (`LLMMetric`) schema:
-- **Code Execution Metric**: Used to run custom Python code for evaluation. Must have a `name` and a `custom_function` (containing a `def evaluate(instance):` signature). By default, the function executes **locally in the CLI process** — no GCP project or region is required, but the user-supplied code runs with the CLI's privileges. Add `"execution": "remote"` to opt into Vertex AI's sandboxed `CodeExecutionMetric` (server-side), which requires a configured GCP project + region.
+- **Code Execution Metric**: Used to run custom Python code for evaluation. Must have a `name` and a `custom_function` (containing a `def evaluate(instance):` signature). By default, the function executes **locally in the CLI process** — no GCP project or region is required, but the user-supplied code runs with the CLI's privileges. Add `"execution": "remote"` to opt into the sandboxed `CodeExecutionMetric` in Gemini platform (server-side), which requires a configured GCP project + region.
 - **LLM-as-a-Judge Metric**: Used to evaluate responses using an LLM judge. Must have a `name` and a `prompt_template`. Optional fields include `judge_model` (e.g., `gemini-3.8-flash`) and `judge_model_sampling_count` (between `1` and `32`).
 
 ### Quick Reference for Common Scenarios
@@ -174,4 +174,4 @@ A run takes anywhere from a few minutes to several hours depending on dataset si
 
 ---
 
-For full documentation on eval case schemas, metrics, and user simulation, see the [Gemini Enterprise Agent Platform Evaluation documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/optimize/evaluation/agent-evaluation).
+For full documentation on eval case schemas, metrics, and user simulation, see the [Gemini platform evaluation documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/optimize/evaluation/agent-evaluation).

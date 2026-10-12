@@ -128,6 +128,24 @@ def copy_files(
         _copy_file(src, dst, overwrite=options.overwrite)
 
 
+def copy_dir_contents(
+    src: pathlib.Path,
+    dst: pathlib.Path,
+    *,
+    clone_root: pathlib.Path | None = None,
+    options: CopyOptions | None = None,
+) -> None:
+    """Copy what *src* holds, even when its own name is an ignored one (``Dist``)."""
+    _copy_dir(
+        src,
+        dst,
+        clone_root=clone_root,
+        options=options or CopyOptions(),
+        visited=frozenset(),
+        depth=0,
+    )
+
+
 def copy_frontend_files(frontend_type: str, project_template: pathlib.Path) -> None:
     """Copy files from the specified frontend folder directly to project root."""
     # Skip copying if frontend_type is "None" or empty

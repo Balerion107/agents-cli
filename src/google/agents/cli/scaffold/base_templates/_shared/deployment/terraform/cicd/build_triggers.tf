@@ -94,7 +94,9 @@ resource "google_cloudbuild_trigger" "cd_pipeline" {
   substitutions = {
     _STAGING_PROJECT_ID            = var.staging_project_id
     _LOGS_BUCKET_NAME_STAGING      = resource.google_storage_bucket.logs_data_bucket[var.staging_project_id].name
+{%- if not (cookiecutter.deployment_target == 'agent_runtime' and cookiecutter.agent_runtime_identity_default == 'agent_identity') %}
     _APP_SERVICE_ACCOUNT_STAGING   = google_service_account.app_sa["staging"].email
+{%- endif %}
     _REGION                        = var.region
 {%- if cookiecutter.deployment_target == 'cloud_run' %}
     _CONTAINER_NAME                = var.project_name
@@ -135,7 +137,9 @@ resource "google_cloudbuild_trigger" "deploy_to_prod_pipeline" {
   substitutions = {
     _PROD_PROJECT_ID             = var.prod_project_id
     _LOGS_BUCKET_NAME_PROD       = resource.google_storage_bucket.logs_data_bucket[var.prod_project_id].name
+{%- if not (cookiecutter.deployment_target == 'agent_runtime' and cookiecutter.agent_runtime_identity_default == 'agent_identity') %}
     _APP_SERVICE_ACCOUNT_PROD    = google_service_account.app_sa["prod"].email
+{%- endif %}
     _REGION                      = var.region
 {%- if cookiecutter.deployment_target == 'cloud_run' %}
     _CONTAINER_NAME              = var.project_name

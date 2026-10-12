@@ -16,7 +16,7 @@ You'll start with the default agent template — an assistant that can look up w
 ## Prerequisites
 
 - Python 3.11+ and [uv](https://docs.astral.sh/uv/getting-started/installation/) installed
-- Authentication set up — either a [Gemini API key](authentication.md#option-a-gemini-api-key-google-ai-studio) or [Google Cloud credentials](authentication.md#option-b-google-cloud-vertex-ai)
+- Authentication set up — either a [Gemini API key](authentication.md#option-a-gemini-api-key-google-ai-studio) or [Google Cloud credentials](authentication.md#option-b-google-cloud-gemini-platform)
 
 ---
 
@@ -218,7 +218,7 @@ agents-cli deploy --status
 ```
 
 !!! note
-    Deployment requires [Google Cloud credentials](authentication.md#option-b-google-cloud-vertex-ai). See the [Deployment Guide](deployment.md) for Agent Runtime, GKE, and other options.
+    Deployment requires [Google Cloud credentials](authentication.md#option-b-google-cloud-gemini-platform). See the [Deployment Guide](deployment.md) for Agent Runtime in Gemini platform, GKE, and other options.
 
 ---
 

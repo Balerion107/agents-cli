@@ -10,7 +10,7 @@ A Go agent built with Google's Agent Development Kit (ADK).
 ├── {{cookiecutter.agent_directory}}/
 │   └── agent.go         # Agent implementation
 ├── sessions/
-│   └── sessions.go      # Session backend selection (in-memory / Vertex AI / Cloud SQL)
+│   └── sessions.go      # Session backend selection (in-memory / Agent Runtime / Cloud SQL)
 ├── e2e/
 │   ├── integration/     # Integration tests
 │   └── load_test/       # Load testing
@@ -31,7 +31,7 @@ A Go agent built with Google's Agent Development Kit (ADK).
 
 - Go 1.26 or later
 - Google Cloud SDK (`gcloud`)
-- A Google Cloud project with Vertex AI enabled
+- A Google Cloud project with Gemini platform enabled
 
 ## Quick Start
 
@@ -87,4 +87,4 @@ make deploy
 ## Learn More
 
 - [ADK for Go Documentation](https://google.github.io/adk-docs/)
-- [Vertex AI Documentation](https://cloud.google.com/vertex-ai/docs)
+- [Gemini platform documentation](https://cloud.google.com/vertex-ai/docs)

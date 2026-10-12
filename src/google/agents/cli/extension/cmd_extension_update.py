@@ -16,17 +16,27 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import shutil
+import stat
+import tempfile
+from collections import deque
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, TypeAlias
 
 import click
 
 from google.agents.cli.__init__ import __version__
+from google.agents.cli._fs import delete_folder, first_copy_error, make_folders_writable
 from google.agents.cli._trust import require_confirmation
-from google.agents.cli.extension._loader import incompatible_spec
+from google.agents.cli.extension._loader import is_out_of_range, load_extension_spec
 from google.agents.cli.extension._manifest import (
     EXTENSIONS_FILE,
     ExtensionEntry,
+    ExtensionListError,
     read_extension_entries,
     upsert_extension_entry,
 )
@@ -34,114 +44,572 @@ from google.agents.cli.extension._paths import (
     installed_scope_roots,
     vendored_extensions_dir,
 )
-from google.agents.cli.extension._refs import RefParseError, parse_ref
-from google.agents.cli.extension._resolver import ResolverError, materialize, resolve_sha
-from google.agents.cli.extension._spec import ExtensionSpecError
+from google.agents.cli.extension._refs import ExtensionRef, RefParseError, parse_ref
+from google.agents.cli.extension._resolver import (
+    CopyChangedError,
+    ResolverError,
+    materialize,
+    resolve_sha,
+    validate_extension_name,
+)
+from google.agents.cli.extension._skills import (
+    SkillError,
+    SkillOwnedError,
+    SkillUndoError,
+    installed_skill_names,
+    link_skills_for_antigravity_if_global,
+    other_scope_extensions,
+    replace_skills,
+    report_skill_changes,
+    skills_dir_for_scope,
+)
+from google.agents.cli.extension._spec import ExtensionSpec, ExtensionSpecError
 from google.agents.cli.extension._trust import confirm_trust
 
+_Outcome: TypeAlias = Literal["updated", "skipped", "retry"]
+_OldCopy: TypeAlias = Literal["kept", "lost", "none"]
 
-def _restore_pin(entry: ExtensionEntry, root: Path) -> None:
-    """Put the previously pinned copy back after refusing to advance to a new one."""
-    try:
-        materialize(
-            parse_ref(entry.source, ref_override=entry.sha),
-            entry.sha,
-            vendored_extensions_dir(root),
-            name=entry.name,
-        )
-    except ResolverError as e:
-        logging.warning("Could not restore the previous pin for %r: %s", entry.name, e)
+_BOTH_SCOPES_REASON = (
+    "it is installed at both scopes, which share ~/.agents/skills/ because "
+    "your home folder is a project"
+)
+_NO_OLD_COPY_HINT = (
+    "Point the source at a version this agents-cli supports, then run agents-cli install"
+)
+
+
+@dataclass
+class _ScopeRun:
+    """One scope's state while its entries are updated.
+
+    `pending` holds the entries after the current one. Only `_update_scope`
+    changes `pending`, `retried` and `updated`.
+    """
+
+    scope: str
+    root: Path
+    skills_dir: Path
+    installed_extensions: frozenset[str]
+    other_scope: frozenset[str]
+    at_both_scopes: frozenset[str]
+    backup_dir: Path
+    auto_approve: bool
+    updates_all: bool
+    pending: deque[ExtensionEntry]
+    retried: set[str]
+    updated_earlier: tuple[str, ...]
+    updated: list[str]
 
 
 @click.command("update")
 @click.argument("name", required=False)
-@require_confirmation("Update extension(s) to the latest pinned ref?")
+@require_confirmation("Update extension(s) and replace their skills?")
 def cmd_update(
     name: str | None,
     auto_approve: bool,
 ) -> None:
-    """Advance extension pins (re-resolve the tracked ref). Updates all if NAME omitted."""
-    updated: list[str] = []
+    """Advance extension pins and replace their skills.
+
+    Updates all if NAME omitted.
+    """
+    updated: list[tuple[str, str]] = []
     skipped: list[str] = []
-    for scope, root in installed_scope_roots():
-        manifest = root / EXTENSIONS_FILE
-        for entry in read_extension_entries(manifest):
-            if name is not None and entry.name != name:
-                continue
-            try:
-                ref = parse_ref(
-                    entry.source,
-                    # "HEAD" means "follow latest"; pass None so resolve_sha re-resolves.
-                    ref_override=(None if entry.ref == "HEAD" else entry.ref),
-                )
-            except RefParseError as e:
-                logging.warning("Skipping extension %r: %s", entry.name, e)
-                skipped.append(entry.name)
-                continue
-            if not confirm_trust(ref, auto_approve=auto_approve):
-                click.secho(f"Skipped {entry.name!r} (not trusted).", fg="yellow")
-                skipped.append(entry.name)
-                continue
-            try:
-                new_sha = resolve_sha(ref)
-                # name=entry.name pins the vendored dir to the stable id (see
-                # materialize) so an update survives an upstream rename.
-                materialize(
-                    ref,
-                    new_sha,
-                    vendored_extensions_dir(root),
-                    name=entry.name,
-                )
-            except ResolverError as e:
-                # One unreachable source must not abandon the others, or the
-                # command reports failure after already advancing a pin.
-                logging.warning("Could not update %r: %s", entry.name, e)
-                skipped.append(entry.name)
-                continue
-            # Compat gate: if the new pin declares an `error`-mode range the
-            # running CLI is outside, keep the old pin (restore its working
-            # copy) instead of advancing to a version that won't run here.
-            try:
-                spec = incompatible_spec(vendored_extensions_dir(root) / entry.name)
-            except ExtensionSpecError as e:
-                _restore_pin(entry, root)
-                click.secho(
-                    f"Skipped {entry.name!r}: the new version's manifest is not "
-                    f"valid ({e}); kept {entry.sha[:7]}.",
-                    fg="yellow",
-                )
-                skipped.append(entry.name)
-                continue
-            if spec is not None:
-                if spec.error_on_incompatible:
-                    _restore_pin(entry, root)
-                    click.secho(
-                        f"Skipped {entry.name!r}: new version requires agents-cli "
-                        f"{spec.requires_agents_cli}, running {__version__} (kept {entry.sha[:7]}).",
-                        fg="yellow",
-                    )
-                    skipped.append(entry.name)
-                    continue
-                logging.warning(
-                    "Updated %r to a version requiring agents-cli %s (running %s).",
-                    entry.name,
-                    spec.requires_agents_cli,
-                    __version__,
-                )
-            upsert_extension_entry(
-                manifest,
-                ExtensionEntry(
-                    name=entry.name,
-                    source=entry.source,
-                    ref=entry.ref,
-                    sha=new_sha,
-                    scope=scope,
-                ),
+    scope_roots = list(installed_scope_roots())
+    at_both_scopes = _names_at_both_scopes(scope_roots)
+    with _backups_root() as backups:
+        for scope, root in scope_roots:
+            scope_updated, scope_skipped = _update_scope(
+                scope,
+                root,
+                name,
+                auto_approve=auto_approve,
+                backup_dir=backups / scope,
+                at_both_scopes=at_both_scopes,
+                updated_earlier=tuple(updated_name for updated_name, _ in updated),
             )
-            updated.append(entry.name)
+            updated.extend(scope_updated)
+            skipped.extend(scope_skipped)
     if not updated and not skipped:
         raise click.ClickException(
             f"No extension named {name!r} found." if name else "No extensions to update."
         )
     if updated:
-        click.secho(f"Updated: {', '.join(updated)}.", fg="green")
+        updated_list = ", ".join(
+            f"{updated_name}{label}" for updated_name, label in updated
+        )
+        click.secho(f"Updated: {updated_list}.", fg="green")
+
+
+def _names_at_both_scopes(scope_roots: list[tuple[str, Path]]) -> frozenset[str]:
+    listed = [
+        {entry.name for entry in read_extension_entries(root / EXTENSIONS_FILE)}
+        for _, root in scope_roots
+    ]
+    return frozenset(set.intersection(*listed)) if len(listed) == 2 else frozenset()
+
+
+@contextlib.contextmanager
+def _backups_root() -> Iterator[Path]:
+    with tempfile.TemporaryDirectory() as backups:
+        try:
+            yield Path(backups)
+        finally:
+            # Make every folder writable first, so the cleanup never needs its own
+            # chmod: before Python 3.11.8 / 3.12.2 that chmod follows symlinks
+            # (CVE-2023-6597).
+            make_folders_writable(Path(backups))
+
+
+def _update_scope(
+    scope: str,
+    root: Path,
+    name: str | None,
+    *,
+    auto_approve: bool,
+    backup_dir: Path,
+    at_both_scopes: frozenset[str],
+    updated_earlier: tuple[str, ...],
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """Update the scope's matching entries, retrying one whose skill owner runs later.
+
+    Returns the updated names with their scope labels, and the skipped names.
+    """
+    entries = read_extension_entries(root / EXTENSIONS_FILE)
+    other_scope = frozenset(other_scope_extensions(scope, root))
+    run = _ScopeRun(
+        scope=scope,
+        root=root,
+        skills_dir=skills_dir_for_scope(scope, root),
+        installed_extensions=frozenset(entry.name for entry in entries) | other_scope,
+        other_scope=other_scope,
+        at_both_scopes=at_both_scopes,
+        backup_dir=backup_dir,
+        auto_approve=auto_approve,
+        updates_all=name is None,
+        pending=deque(entry for entry in entries if name is None or entry.name == name),
+        retried=set(),
+        updated_earlier=updated_earlier,
+        updated=[],
+    )
+    skipped: list[str] = []
+    while run.pending:
+        entry = run.pending.popleft()
+        outcome = _update_entry(run, entry)
+        if outcome == "retry":
+            run.retried.add(entry.name)
+            run.pending.append(entry)
+        elif outcome == "updated":
+            run.updated.append(entry.name)
+        else:
+            skipped.append(entry.name)
+    labeled = [
+        (updated_name, _scope_label(run, updated_name)) for updated_name in run.updated
+    ]
+    return labeled, skipped
+
+
+def _update_entry(run: _ScopeRun, entry: ExtensionEntry) -> _Outcome:
+    """Check that the entry can be updated, back up its copy, then advance it."""
+    ref = _parse_entry_ref(entry)
+    if ref is None:
+        return "skipped"
+    if entry.name in run.other_scope and _has_installed_skills(run, entry.name):
+        logging.warning(
+            "Skipped %r (%s scope): %s. Remove it at one scope first.",
+            entry.name,
+            run.scope,
+            _BOTH_SCOPES_REASON,
+        )
+        return "skipped"
+    already_trusted = entry.name in run.retried
+    if not already_trusted and not confirm_trust(ref, auto_approve=run.auto_approve):
+        logging.warning(
+            "Skipped %r%s (not trusted).", entry.name, _scope_label(run, entry.name)
+        )
+        return "skipped"
+    extension_dir = vendored_extensions_dir(run.root) / entry.name
+    try:
+        backup = _back_up_local_copy(ref, extension_dir, run.backup_dir)
+    except OSError as e:
+        _report_skipped(
+            run,
+            entry,
+            ref,
+            f"could not back up the old copy ({first_copy_error(e)})",
+            "kept",
+        )
+        return "skipped"
+    return _advance(run, entry, ref, extension_dir, backup)
+
+
+def _parse_entry_ref(entry: ExtensionEntry) -> ExtensionRef | None:
+    """The ref to update the entry from.
+
+    Returns None (with a warning) when its name or ref is invalid.
+    """
+    try:
+        validate_extension_name(entry.name)
+        return parse_ref(
+            entry.source,
+            # "HEAD" means "follow latest"; pass None so resolve_sha re-resolves.
+            ref_override=(None if entry.ref == "HEAD" else entry.ref),
+        )
+    except (ResolverError, RefParseError) as e:
+        logging.warning("Skipping extension %r: %s", entry.name, e)
+        return None
+
+
+def _has_installed_skills(run: _ScopeRun, name: str) -> bool:
+    try:
+        return bool(installed_skill_names(run.skills_dir, name))
+    except SkillError as e:
+        logging.debug("Could not list the skills of %r: %s", name, e)
+        # The unreadable folder may hold them.
+        return True
+
+
+def _back_up_local_copy(
+    ref: ExtensionRef, extension_dir: Path, backup_dir: Path
+) -> Path | None:
+    """Copy a `local@` extension's vendored copy aside before it is replaced.
+
+    A git pin can be materialized again from its SHA. A local source has no
+    history, so copying it again would bring back the refused version.
+    A symlinked folder is skipped: update cannot replace it, so it never needs
+    restoring.
+    """
+    if ref.kind != "local" or extension_dir.is_symlink() or not extension_dir.is_dir():
+        return None
+    backup = backup_dir / extension_dir.name
+    if backup.exists():
+        # A name listed twice is backed up twice; the first backup can hold
+        # read-only folders copied from the old copy.
+        make_folders_writable(backup)
+        shutil.rmtree(backup)
+    shutil.copytree(extension_dir, backup, symlinks=True)
+    return backup
+
+
+def _report_skipped(
+    run: _ScopeRun,
+    entry: ExtensionEntry,
+    ref: ExtensionRef,
+    reason: str,
+    old_copy: _OldCopy,
+    *,
+    no_old_copy_hint: str = _NO_OLD_COPY_HINT,
+) -> None:
+    logging.warning(
+        "Skipped %r%s: %s; %s.",
+        entry.name,
+        _scope_label(run, entry.name),
+        reason,
+        _old_copy_status(entry, ref, old_copy, no_old_copy_hint),
+    )
+
+
+def _scope_label(run: _ScopeRun, name: str) -> str:
+    # A name listed at both scopes gets one line per scope.
+    return f" ({run.scope} scope)" if name in run.at_both_scopes else ""
+
+
+def _old_copy_status(
+    entry: ExtensionEntry, ref: ExtensionRef, old_copy: _OldCopy, no_old_copy_hint: str
+) -> str:
+    if old_copy == "kept":
+        # A local@ entry's sha is the word "local", not a pin.
+        return "kept the old copy" if ref.kind == "local" else f"kept {entry.sha[:7]}"
+    if old_copy == "none":
+        return f"deleted the refused copy (there was no old copy). {no_old_copy_hint}"
+    return "could not restore the old copy; run agents-cli install"
+
+
+def _advance(
+    run: _ScopeRun,
+    entry: ExtensionEntry,
+    ref: ExtensionRef,
+    extension_dir: Path,
+    backup: Path | None,
+) -> _Outcome:
+    """Fetch the new version, check it, install its skills and record the new pin."""
+    try:
+        new_sha = _fetch_and_materialize_new_version(ref, extension_dir)
+    except (ResolverError, OSError) as e:
+        # One unreachable source must not abandon the others, or the
+        # command reports failure after already advancing a pin.
+        logging.warning(
+            "Could not update %r%s: %s", entry.name, _scope_label(run, entry.name), e
+        )
+        if isinstance(e, CopyChangedError):
+            _restore_changed_copy(entry, ref, extension_dir, backup)
+        return "skipped"
+    try:
+        new_spec = load_extension_spec(extension_dir)
+    except ExtensionSpecError as e:
+        _restore_and_report(
+            run,
+            entry,
+            ref,
+            extension_dir,
+            backup,
+            reason=f"the new version's manifest is not valid ({e})",
+        )
+        return "skipped"
+    refusal = _new_version_refusal(run, entry, new_spec)
+    if refusal is not None:
+        _restore_and_report(run, entry, ref, extension_dir, backup, reason=refusal)
+        return "skipped"
+    try:
+        removed_skills = replace_skills(
+            new_spec, run.skills_dir, entry.name, run.installed_extensions
+        )
+    except SkillError as e:
+        return _skills_refused(run, entry, ref, extension_dir, backup, error=e)
+    return _record_update(run, entry, new_sha, new_spec, removed_skills)
+
+
+def _fetch_and_materialize_new_version(ref: ExtensionRef, extension_dir: Path) -> str:
+    """Resolve the tracked ref and vendor that commit; returns its SHA."""
+    new_sha = resolve_sha(ref)
+    # name=extension_dir.name pins the vendored dir to the stable id (see
+    # materialize) so an update survives an upstream rename.
+    materialize(ref, new_sha, extension_dir.parent, name=extension_dir.name)
+    return new_sha
+
+
+def _restore_changed_copy(
+    entry: ExtensionEntry, ref: ExtensionRef, extension_dir: Path, backup: Path | None
+) -> None:
+    """Undo a failed update that already changed the copy."""
+    if backup is not None:
+        restored = _restore_backup(entry, extension_dir, backup)
+    elif ref.kind == "local":
+        # There was no old copy, and a half-made one must not look installed.
+        delete_folder(extension_dir)
+        restored = not (extension_dir.exists() or extension_dir.is_symlink())
+    else:
+        restored = _materialize_old_pin(entry, ref, extension_dir)
+    if not restored:
+        logging.warning(
+            "The copy of %r may be incomplete; run agents-cli install.", entry.name
+        )
+
+
+def _restore_backup(entry: ExtensionEntry, extension_dir: Path, backup: Path) -> bool:
+    try:
+        _swap_in_backup(extension_dir, backup)
+    except OSError as e:
+        logging.warning(
+            "Could not restore the previous copy of %r: %s",
+            entry.name,
+            first_copy_error(e),
+        )
+        return False
+    return True
+
+
+def _swap_in_backup(extension_dir: Path, backup: Path) -> None:
+    # Swapped by renames, so a failed step never half-deletes the old copy.
+    work = Path(
+        tempfile.mkdtemp(
+            prefix=f".{extension_dir.name}.restoring-", dir=extension_dir.parent
+        )
+    )
+    new_copy = work / "new"
+    old_copy = work / "old"
+    try:
+        shutil.copytree(backup, new_copy, symlinks=True)
+        # Linux will not move a read-only folder to another parent.
+        mode = stat.S_IMODE(new_copy.stat().st_mode)
+        new_copy.chmod(mode | stat.S_IRWXU)
+        if extension_dir.exists():
+            old_mode = stat.S_IMODE(extension_dir.stat().st_mode)
+            extension_dir.chmod(old_mode | stat.S_IRWXU)
+            extension_dir.rename(old_copy)
+        try:
+            new_copy.rename(extension_dir)
+        except OSError:
+            if old_copy.exists():
+                old_copy.rename(extension_dir)
+            raise
+    finally:
+        delete_folder(work)
+
+
+def _materialize_old_pin(
+    entry: ExtensionEntry, ref: ExtensionRef, extension_dir: Path
+) -> bool:
+    try:
+        materialize(ref, entry.sha, extension_dir.parent, name=entry.name)
+    except (ResolverError, OSError) as e:
+        logging.warning("Could not restore the previous pin for %r: %s", entry.name, e)
+        return False
+    return True
+
+
+def _restore_and_report(
+    run: _ScopeRun,
+    entry: ExtensionEntry,
+    ref: ExtensionRef,
+    extension_dir: Path,
+    backup: Path | None,
+    *,
+    reason: str,
+) -> None:
+    old_copy = _restore_refused_copy(entry, ref, extension_dir, backup)
+    _report_skipped(run, entry, ref, reason, old_copy)
+
+
+def _restore_refused_copy(
+    entry: ExtensionEntry, ref: ExtensionRef, extension_dir: Path, backup: Path | None
+) -> _OldCopy:
+    """Put the previously pinned copy back after refusing to advance to a new one.
+
+    Returns what happened to the old copy. Unless it is back, it deletes the
+    refused copy (or warns that it could not), so the loader asks for
+    `agents-cli install`, as the skip message does.
+    """
+    if backup is not None:
+        restored = _restore_backup(entry, extension_dir, backup)
+    elif ref.kind == "local":
+        delete_folder(extension_dir)
+        return "none"
+    else:
+        restored = _materialize_old_pin(entry, ref, extension_dir)
+    if restored:
+        return "kept"
+    delete_folder(extension_dir)
+    return "lost"
+
+
+def _new_version_refusal(
+    run: _ScopeRun, entry: ExtensionEntry, new_spec: ExtensionSpec | None
+) -> str | None:
+    """Why the fetched version must not replace the old pin, or None."""
+    if new_spec is None:
+        return None
+    # A version whose `error`-mode range excludes this CLI would not run here.
+    if is_out_of_range(new_spec) and new_spec.error_on_incompatible:
+        return (
+            f"new version requires agents-cli "
+            f"{new_spec.requires_agents_cli}, running {__version__}"
+        )
+    if entry.name in run.other_scope and new_spec.skills:
+        return (
+            f"the new version has skills, and {_BOTH_SCOPES_REASON} "
+            "(remove it at one scope first)"
+        )
+    return None
+
+
+def _skills_refused(
+    run: _ScopeRun,
+    entry: ExtensionEntry,
+    ref: ExtensionRef,
+    extension_dir: Path,
+    backup: Path | None,
+    *,
+    error: SkillError,
+) -> _Outcome:
+    """Restore the old pin, then retry once after a later owner, or report the skip."""
+    owner_runs_later = isinstance(error, SkillOwnedError) and any(
+        later.name == error.owner for later in run.pending
+    )
+    old_copy = _restore_refused_copy(entry, ref, extension_dir, backup)
+    if old_copy == "kept" and owner_runs_later and entry.name not in run.retried:
+        return "retry"
+    owner_updates_later = isinstance(error, SkillOwnedError) and (
+        owner_runs_later or _owner_updates_at_user_scope(run, error.owner)
+    )
+    reason = _skill_error_reason(run, error, owner_updates_later=owner_updates_later)
+    _report_skipped(
+        run,
+        entry,
+        ref,
+        f"the new version's skills cannot be installed ({reason})",
+        old_copy,
+        no_old_copy_hint=(
+            f"Fix the cause, then run `agents-cli extension update {entry.name}` again"
+        ),
+    )
+    if owner_updates_later:
+        logging.warning(
+            "If that update dropped the skill, run `agents-cli extension update %s` "
+            "again.",
+            entry.name,
+        )
+    if isinstance(error, SkillUndoError):
+        logging.warning(
+            "These skills may be missing or changed: %s. Run "
+            "`agents-cli extension update %s` again to fix them.",
+            ", ".join(error.not_restored),
+            entry.name,
+        )
+    return "skipped"
+
+
+def _owner_updates_at_user_scope(run: _ScopeRun, owner: str) -> bool:
+    # User scope runs after project scope, so with no NAME this run also tries
+    # to update an owner recorded there.
+    return run.scope == "project" and run.updates_all and owner in run.other_scope
+
+
+def _skill_error_reason(
+    run: _ScopeRun, error: SkillError, *, owner_updates_later: bool
+) -> str:
+    """The error, worded so it is still true when the run ends."""
+    if isinstance(error, SkillOwnedError):
+        if owner_updates_later:
+            return (
+                f"skill {error.skill_name!r} was still installed by extension "
+                f"{error.owner!r}, which this run tried to update after it"
+            )
+        if error.owner in run.updated_earlier or error.owner in run.updated:
+            return error.with_hint("Remove that extension first.")
+    if isinstance(error, SkillUndoError):
+        return error.cause
+    return str(error)
+
+
+def _record_update(
+    run: _ScopeRun,
+    entry: ExtensionEntry,
+    new_sha: str,
+    new_spec: ExtensionSpec | None,
+    removed_skills: tuple[str, ...],
+) -> _Outcome:
+    """Relink the skills, record the new pin, and report the result."""
+    # Even when no skill changed, a skill folder deleted by hand leaves a dead link.
+    if run.skills_dir.is_dir():
+        link_skills_for_antigravity_if_global(run.skills_dir)
+    try:
+        upsert_extension_entry(
+            run.root / EXTENSIONS_FILE,
+            ExtensionEntry(
+                name=entry.name,
+                source=entry.source,
+                ref=entry.ref,
+                sha=new_sha,
+                scope=run.scope,
+            ),
+        )
+    except (OSError, ExtensionListError) as e:
+        report_skill_changes(new_spec, entry.name, run.skills_dir, removed_skills)
+        logging.warning(
+            "Could not record the new pin of %r: %s. Its copy and skills are already "
+            "the new version. Fix the cause (for example, file permissions), then run "
+            "`agents-cli extension update %s` again.",
+            entry.name,
+            e,
+            entry.name,
+        )
+        return "skipped"
+    if new_spec is not None and is_out_of_range(new_spec):
+        logging.warning(
+            "Updated %r to a version requiring agents-cli %s (running %s).",
+            entry.name,
+            new_spec.requires_agents_cli,
+            __version__,
+        )
+    report_skill_changes(new_spec, entry.name, run.skills_dir, removed_skills)
+    return "updated"

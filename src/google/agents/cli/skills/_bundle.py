@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_SKILL_PREFIX = "google-agents-cli-"
+SKILL_PREFIX = "google-agents-cli-"
 
 SKILL_BUNDLE_DIR = Path(__file__).resolve().parent / "data"
 
@@ -40,7 +40,7 @@ def is_skill_dir(path: Path) -> bool:
     """
     return (
         path.is_dir()
-        and path.name.startswith(_SKILL_PREFIX)
+        and path.name.startswith(SKILL_PREFIX)
         and (path / "SKILL.md").is_file()
     )
 

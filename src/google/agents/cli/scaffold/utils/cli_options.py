@@ -19,6 +19,8 @@ from dataclasses import dataclass
 
 import click
 
+from google.agents.cli._project import AGENT_RUNTIME_IDENTITY_DEFAULTS
+
 from . import template
 
 
@@ -52,7 +54,7 @@ def shared_template_options(f: Callable) -> Callable:
         "-s",
         "--skip-checks",
         is_flag=True,
-        help="Skip verification checks for GCP and Vertex AI",
+        help="Skip verification checks for GCP and Gemini platform",
         default=False,
     )(f)
     f = click.option(
@@ -118,6 +120,17 @@ def shared_template_options(f: Callable) -> Callable:
             "Make the Dockerfile Agent Gateway-ready by trusting the gateway's "
             "root CA (Agent Runtime only). Required before `agents-cli deploy "
             "--agent-gateway-egress`"
+        ),
+    )(f)
+    # None means "use the default for this project".
+    f = click.option(
+        "--agent-runtime-identity-default",
+        type=click.Choice(AGENT_RUNTIME_IDENTITY_DEFAULTS),
+        default=None,
+        help=(
+            "Whether this project's Agent Runtime agents run as their own Agent "
+            "Identity principal (agent_identity) or as a service account "
+            "(service_account). New projects use agent_identity."
         ),
     )(f)
     f = click.option(

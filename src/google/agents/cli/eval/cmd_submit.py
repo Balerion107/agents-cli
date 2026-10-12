@@ -32,7 +32,7 @@ from google.agents.cli.eval.eval_utils import (
 
 
 def _get_eval_client(project: str | None, region: str | None) -> AgentPlatformClient:
-    """Resolves GCP project and region, then initializes the Vertex AI Client."""
+    """Resolves GCP project and region, then initializes the Gemini platform client."""
     resolved_project = _gcp_project.resolve_gcp_project(project, required=True)
     return AgentPlatformClient(
         project=resolved_project, location=resolve_eval_region(region)
@@ -42,7 +42,8 @@ def _get_eval_client(project: str | None, region: str | None) -> AgentPlatformCl
 @click.command("submit")
 @click.option(
     "--resource-name",
-    help="Agent engine resource name (e.g. projects/.../locations/.../reasoningEngines/...).",
+    help="Resource name of the deployment on Agent Runtime in Gemini platform "
+    "(e.g. projects/.../locations/.../reasoningEngines/...).",
 )
 @click.option(
     "--dataset",
@@ -74,7 +75,7 @@ def _get_eval_client(project: str | None, region: str | None) -> AgentPlatformCl
 @click.option(
     "--region",
     default=None,
-    help="GCP region for the Vertex eval service. Defaults to 'global'.",
+    help="GCP region for the Eval Service in Gemini platform. Defaults to 'global'.",
 )
 def cmd_submit(
     dataset: str,
@@ -86,7 +87,7 @@ def cmd_submit(
     project: str | None = None,
     region: str | None = None,
 ) -> None:
-    """[Experimental] Submit an E2E cloud-side evaluation run on Vertex AI Eval Service."""
+    """[Experimental] Submit an E2E cloud-side evaluation run on the Eval Service in Gemini platform."""
     logging.warning("`eval submit` is experimental and may change.")
     console = Console()
 
@@ -152,7 +153,7 @@ def cmd_submit(
 @click.option(
     "--region",
     default=None,
-    help="GCP region for the Vertex eval service. Defaults to 'global'.",
+    help="GCP region for the Eval Service in Gemini platform. Defaults to 'global'.",
 )
 def cmd_results(
     run_id: str,

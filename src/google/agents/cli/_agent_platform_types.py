@@ -12,20 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Agent Platform SDK types, imported through the SDK's public path.
+"""Gemini platform SDK types.
 
 Use ``types.EvalCase``, ``types.evals.AgentEvent``, etc. from here rather than
-importing ``agentplatform._genai`` directly.
+importing ``agentplatform._genai`` directly. ``_sdk_compat`` resolves them.
 """
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    # The public `agentplatform.types` is served by an untyped module
-    # `__getattr__`, which type checkers resolve to Unknown. Point them at the
-    # module it returns so the SDK models stay type-checked.
-    from agentplatform._genai import types  # noqa: TID251
-else:
-    from agentplatform import types
+from google.agents.cli._sdk_compat import types
 
 __all__ = ["types"]

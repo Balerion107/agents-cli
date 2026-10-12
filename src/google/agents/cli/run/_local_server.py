@@ -358,7 +358,7 @@ def _start_server(
 
     `use_in_memory_session` sets `USE_IN_MEMORY_SESSION` to `true` or `false`
     in the child's env. `true` lets the server start without cloud dependencies
-    (e.g. Agent Runtime session type); `false` makes it use the agent's real
+    (e.g. the Agent Runtime session type); `false` makes it use the agent's real
     session service.
     """
     adk_dir = project_root / _PID_DIR

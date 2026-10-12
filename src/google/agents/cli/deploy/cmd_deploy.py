@@ -38,6 +38,7 @@ from google.agents.cli.deploy._utils import (
     DEFAULT_MIN_INSTANCES,
     MachineShape,
     parse_kv_flag,
+    parse_list_flag,
     resolve_service_name,
     validate_deployment_region,
 )
@@ -69,6 +70,9 @@ _TARGET_DISPLAY_NAMES = {
 _SIZING_HINT = (
     "On GKE, configure sizing via Terraform and the HorizontalPodAutoscaler "
     "under deployment/terraform/."
+)
+_LABELS_HINT = (
+    "On GKE, resource labels are managed via Terraform under deployment/terraform/."
 )
 # Flags that only some deployment targets support, in the order they are checked:
 # (flag, targets that support it, hint shown on the other targets).
@@ -102,6 +106,20 @@ _TARGET_ONLY_FLAGS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ),
     ("--timeout", (_CLOUD_RUN,), ""),
     ("--ingress", (_CLOUD_RUN,), ""),
+    ("--iap", (_CLOUD_RUN,), ""),
+    (
+        "--port",
+        (_AGENT_RUNTIME, _CLOUD_RUN),
+        "On GKE, the container port is set in the Kubernetes deployment under "
+        "deployment/terraform/.",
+    ),
+    (
+        "--service-account",
+        (_AGENT_RUNTIME, _CLOUD_RUN),
+        "On GKE, the workload's service account is managed via Terraform under "
+        "deployment/terraform/.",
+    ),
+    ("--cluster-name", (_GKE,), ""),
     # On GKE these are owned by Terraform and the HorizontalPodAutoscaler; reject
     # them rather than silently ignoring them.
     ("--cpu", (_AGENT_RUNTIME, _CLOUD_RUN), _SIZING_HINT),
@@ -109,11 +127,9 @@ _TARGET_ONLY_FLAGS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("--min-instances", (_AGENT_RUNTIME, _CLOUD_RUN), _SIZING_HINT),
     ("--max-instances", (_AGENT_RUNTIME, _CLOUD_RUN), _SIZING_HINT),
     ("--concurrency", (_AGENT_RUNTIME, _CLOUD_RUN), _SIZING_HINT),
-    (
-        "--labels",
-        (_AGENT_RUNTIME, _CLOUD_RUN),
-        "On GKE, resource labels are managed via Terraform under deployment/terraform/.",
-    ),
+    ("--labels", (_AGENT_RUNTIME, _CLOUD_RUN), _LABELS_HINT),
+    ("--remove-labels", (_AGENT_RUNTIME, _CLOUD_RUN), _LABELS_HINT),
+    ("--clear-labels", (_AGENT_RUNTIME, _CLOUD_RUN), _LABELS_HINT),
     ("--no-wait", (_AGENT_RUNTIME, _CLOUD_RUN), ""),
 )
 
@@ -131,6 +147,8 @@ _TARGET_ONLY_FLAGS: tuple[tuple[str, tuple[str, ...], str], ...] = (
 )
 @click.option(
     "--secrets",
+    "--update-secrets",
+    "secrets",
     default=None,
     help="Comma-separated ENV=SECRET or ENV=SECRET:VERSION pairs "
     "(Agent Runtime, Cloud Run).",
@@ -142,7 +160,11 @@ _TARGET_ONLY_FLAGS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     "agent's identity untouched (on update) or disables Agent Identity (on create).",
 )
 @click.option(
-    "--update-env-vars", default=None, help="Comma-separated KEY=VALUE env vars."
+    "--env-vars",
+    "--update-env-vars",
+    "env_vars",
+    default=None,
+    help="Comma-separated KEY=VALUE env vars.",
 )
 @click.option(
     "--iap",
@@ -230,10 +252,27 @@ _TARGET_ONLY_FLAGS: tuple[tuple[str, tuple[str, ...], str], ...] = (
 )
 @click.option(
     "--labels",
+    "--update-labels",
+    "update_labels",
     default=None,
-    help="Comma-separated KEY=VALUE resource labels (Agent Runtime, Cloud Run). "
-    "Additive: adds/updates the labels you name; labels you don't name are "
-    "preserved.",
+    help="Comma-separated KEY=VALUE resource labels to add or update (Agent "
+    "Runtime, Cloud Run). Additive: adds/updates the labels you name; labels "
+    "you don't name are preserved.",
+)
+@click.option(
+    "--remove-labels",
+    default=None,
+    help="Comma-separated label KEYs to remove (Agent Runtime, Cloud Run). Keys "
+    "that don't exist are ignored. A key can't appear in both --labels and "
+    "--remove-labels. Cannot be combined with --clear-labels.",
+)
+@click.option(
+    "--clear-labels",
+    is_flag=True,
+    default=False,
+    help="Remove all resource labels (Agent Runtime, Cloud Run). Combine with "
+    "--labels to replace the label set; the clear is applied first. Cannot be "
+    "combined with --remove-labels.",
 )
 @click.option(
     "--cluster-name",
@@ -351,7 +390,7 @@ def cmd_deploy(
     deployment_target: str | None,
     secrets: str | None,
     agent_identity: bool | None,
-    update_env_vars: str | None,
+    env_vars: str | None,
     iap: bool,
     ingress: str | None,
     port: int | None,
@@ -380,14 +419,16 @@ def cmd_deploy(
     agent_gateway_egress: str | None,
     agent_gateway_ingress: str | None,
     build_args: str | None,
-    labels: str | None,
+    update_labels: str | None,
+    remove_labels: str | None,
+    clear_labels: bool,
     key: str | None,
 ) -> None:
     """Deploy the agent.
 
     \b
     Dispatches by deployment target configured in agents-cli-manifest.yaml:
-      agent_runtime → Agent Runtime deployment
+      agent_runtime → Agent Runtime in Gemini platform
       cloud_run    → gcloud run deploy
       gke          → terraform + docker build + kubectl apply
 
@@ -447,7 +488,26 @@ def cmd_deploy(
     _validate_flags_for_target(cfg.deployment_target, _passed_flags(ctx))
     framework = cfg.framework if framework is None else framework
 
-    parsed_labels = parse_kv_flag("--labels", labels)
+    parsed_update_labels = parse_kv_flag("--labels", update_labels)
+    parsed_remove_labels = parse_list_flag("--remove-labels", remove_labels)
+
+    # --clear-labels already removes every key, so naming keys to remove on top
+    # of it is contradictory; gcloud rejects the pair too. (--clear-labels with
+    # --labels is fine: the clear is applied first, as in gcloud.)
+    if clear_labels and parsed_remove_labels:
+        raise click.ClickException(
+            "--clear-labels already removes every label, so it can't be combined "
+            "with --remove-labels. Drop --remove-labels."
+        )
+
+    # A key can't be both added and removed in the same deploy.
+    label_conflicts = parsed_update_labels.keys() & set(parsed_remove_labels)
+    if label_conflicts:
+        raise click.ClickException(
+            f"{', '.join(sorted(label_conflicts))} appear(s) in both --labels / "
+            "--update-labels and --remove-labels. A label can't be added and "
+            "removed in the same deploy."
+        )
 
     # Prompt only once every flag is known to be valid, so a bad flag never
     # costs the user a confirmation.
@@ -464,6 +524,7 @@ def cmd_deploy(
                 secrets=secrets,
                 update_only=update_only,
                 agent_identity=agent_identity,
+                identity_type_default=cfg.agent_runtime_identity_default,
             )
             print_agent_runtime_dry_run(
                 project=project,
@@ -474,6 +535,9 @@ def cmd_deploy(
                 agent_gateway_egress=agent_gateway_egress,
                 agent_gateway_ingress=agent_gateway_ingress,
                 kms_key=key,
+                update_labels=parsed_update_labels,
+                remove_labels=parsed_remove_labels,
+                clear_labels=clear_labels,
             )
             return
         deploy_agent_runtime(
@@ -481,9 +545,11 @@ def cmd_deploy(
             project=project,
             location=region,
             display_name=service_name,
-            set_env_vars=update_env_vars,
+            env_vars=env_vars,
             set_secrets=secrets,
-            labels=parsed_labels or None,
+            update_labels=parsed_update_labels,
+            remove_labels=parsed_remove_labels,
+            clear_labels=clear_labels,
             service_account=service_account,
             agent_identity=agent_identity,
             no_wait=no_wait,
@@ -514,9 +580,11 @@ def cmd_deploy(
             port=port,
             iap=iap,
             service_account=service_account,
-            update_env_vars=update_env_vars,
+            env_vars=env_vars,
             secrets=secrets,
-            labels=parsed_labels,
+            update_labels=parsed_update_labels,
+            remove_labels=parsed_remove_labels,
+            clear_labels=clear_labels,
             no_wait=no_wait,
             dry_run=dry_run,
         )
@@ -527,7 +595,7 @@ def cmd_deploy(
             region=region,
             image=image,
             cluster_name=cluster_name,
-            update_env_vars=update_env_vars,
+            env_vars=env_vars,
             dry_run=dry_run,
             service_name=service_name,
             session_type=cfg.session_type,
@@ -668,15 +736,19 @@ def _confirm_resolved_project(project: str, *, interactive: bool) -> None:
         raise click.ClickException("Aborted by user.")
 
 
-def _passed_flags(ctx: click.Context) -> set[str]:
-    """CLI names of the options typed on the command line, e.g. ``{"--timeout"}``.
+def _passed_flags(ctx: click.Context) -> dict[str, str]:
+    """Options typed on the command line, keyed by their primary CLI name.
+
+    Each value is how an error names the option: every long spelling, so an alias
+    is recognizable, e.g. ``{"--timeout": "--timeout", "--labels": "--labels /
+    --update-labels"}``.
 
     Asks Click where each value came from instead of inspecting values, so an
     explicitly empty value (``--key ""``) counts as passed while a default does not.
     Values from an env var, a ``default_map``, or ``ctx.invoke`` are not
     COMMANDLINE and so are not checked; deploy uses none of those today.
     """
-    passed = set()
+    passed = {}
     for param in ctx.command.params:
         name = param.name
         if (
@@ -686,17 +758,19 @@ def _passed_flags(ctx: click.Context) -> set[str]:
             continue
         # --agent-identity/--no-agent-identity: name the form the user typed.
         if param.secondary_opts and ctx.params[name] is False:
-            passed.add(param.secondary_opts[0])
+            passed[param.secondary_opts[0]] = param.secondary_opts[0]
         # The table only lists -- names, so a param without one can't match a row.
-        elif opt := next((opt for opt in param.opts if opt.startswith("--")), None):
-            passed.add(opt)
+        elif long_opts := [opt for opt in param.opts if opt.startswith("--")]:
+            passed[long_opts[0]] = " / ".join(long_opts)
     return passed
 
 
-def _validate_flags_for_target(deployment_target: str, passed_flags: set[str]) -> None:
+def _validate_flags_for_target(
+    deployment_target: str, passed_flags: dict[str, str]
+) -> None:
     """Reject flags that the deployment target does not support."""
     rejected = [
-        (flag, targets, hint)
+        (passed_flags[flag], targets, hint)
         for flag, targets, hint in _TARGET_ONLY_FLAGS
         if flag in passed_flags and deployment_target not in targets
     ]

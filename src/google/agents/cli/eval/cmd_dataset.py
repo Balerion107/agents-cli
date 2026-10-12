@@ -219,7 +219,7 @@ def cmd_synthesize(
         except subprocess.TimeoutExpired as exc:
             raise click.ClickException(
                 f"Trace synthesis timed out after {_SYNTHESIZE_TIMEOUT}s. "
-                "The Vertex AI call may be hanging; check "
+                "The Gemini platform call may be hanging; check "
                 "GOOGLE_CLOUD_LOCATION in your .env."
             ) from exc
     finally:

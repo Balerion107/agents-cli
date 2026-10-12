@@ -189,13 +189,14 @@ build-inspector-if-needed:
 {%- if cookiecutter.deployment_target == 'cloud_run' %}
 
 # ==============================================================================
-# Gemini Enterprise Registration
+# Gemini Registration
 # ==============================================================================
 
-# Register agent with Gemini Enterprise for A2A discovery
+# Register agent with Gemini for A2A discovery
 # Usage: make publish-gemini-enterprise (interactive - will prompt for required details)
-# For non-interactive use, set env vars: ID or GEMINI_ENTERPRISE_APP_ID (full GE resource name)
+# For non-interactive use, set GEMINI_APP_ID (full Gemini app resource name)
 # Optional env vars: GEMINI_DISPLAY_NAME, GEMINI_DESCRIPTION, AGENT_CARD_URL
+# Calls the CLI's pre-rename command name, which every agents-cli version accepts.
 publish-gemini-enterprise:
 	@PROJECT_ID=$$(gcloud config get-value project 2>/dev/null) && \
 	PROJECT_NUMBER=$$(gcloud projects describe $$PROJECT_ID --format="value(projectNumber)" 2>/dev/null) && \
@@ -203,4 +204,7 @@ publish-gemini-enterprise:
 		--agent-card-url="https://{{cookiecutter.project_name}}-$$PROJECT_NUMBER.us-east1.run.app/.well-known/agent-card.json" \
 		--deployment-target="cloud_run" \
 		--project-number="$$PROJECT_NUMBER"
+
+# Alias for 'make publish-gemini-enterprise'
+publish-gemini: publish-gemini-enterprise
 {%- endif %}

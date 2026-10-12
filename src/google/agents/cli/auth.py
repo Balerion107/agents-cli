@@ -17,7 +17,7 @@
 Supports 3 authentication methods:
 - Google Cloud credentials (Application Default Credentials)
 - Gemini API Key from AI Studio (GEMINI_API_KEY)
-- Express Mode / Vertex AI API key (GOOGLE_API_KEY)
+- Express Mode / Gemini platform API key (GOOGLE_API_KEY)
 
 Authentication is based on environment variables and gcloud ADC.
 For API key methods, we print instructions for the user to
@@ -258,10 +258,10 @@ def _setup_gemini_api_key():
 
 # TODO(b/495501218): Re-enable Express Mode in the login menu once launched.
 def _setup_express_mode():
-    """Guide the user through Vertex AI Express Mode setup.
+    """Guide the user through setting up Express Mode in Gemini platform.
 
     Checks for GOOGLE_API_KEY env var. If not set, opens the
-    Vertex AI API keys page and prompts the user to paste a key.
+    API keys page and prompts the user to paste a key.
     Persists the key by appending to the user's shell profile.
 
     Returns:
@@ -277,7 +277,7 @@ def _setup_express_mode():
     click.echo()
 
     url = "https://cloud.google.com/vertex-ai/generative-ai/docs/start/api-keys"
-    click.echo("  We'll open the Vertex AI API keys page in your browser.")
+    click.echo("  We'll open the API keys page in your browser.")
     click.echo("  Create or copy an API key, then come back here for more instructions.")
     click.echo()
     click.secho(f"  {url}", fg="cyan")

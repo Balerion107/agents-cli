@@ -36,7 +36,7 @@ def eval_group():
       dataset   Synthesize multi-turn eval traces (user simulation)
       analyze   Analyze failure clusters from results
       optimize  Optimize agent prompts using the GEPA framework
-      submit    Submit an E2E cloud-side evaluation run on Vertex AI Eval Service
+      submit    Submit an E2E cloud-side evaluation run on the Eval Service in Gemini platform
       results   Fetch results from a completed cloud evaluation run
     """
 
@@ -84,7 +84,7 @@ eval_group.add_lazy_command(
 eval_group.add_lazy_command(
     "submit",
     "google.agents.cli.eval.cmd_submit:cmd_submit",
-    "[Experimental] Submit an E2E cloud-side evaluation run on Vertex AI Eval Service.",
+    "[Experimental] Submit an E2E cloud-side evaluation run on the Eval Service in Gemini platform.",
 )
 eval_group.add_lazy_command(
     "results",

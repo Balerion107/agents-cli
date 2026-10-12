@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared construction of the Agent Platform SDK client."""
+"""Shared construction of the Gemini platform SDK client."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import agentplatform
 
-# Retry options applied to every Agent Platform client the CLI builds. Leaving
+# Retry options applied to every Gemini platform client the CLI builds. Leaving
 # http_status_codes unset keeps the SDK's default retryable set (408/429/500/502/503/504);
 # waits are roughly 1s, 2s, 4s, 8s (full-jittered).
 RETRY_OPTIONS: dict[str, Any] = {
@@ -31,7 +31,7 @@ RETRY_OPTIONS: dict[str, Any] = {
 
 
 class AgentPlatformClient:
-    """Agent Platform client configured with CLI-wide defaults (e.g. retries on transient errors).
+    """Gemini platform client configured with CLI-wide defaults (e.g. retries on transient errors).
 
     Retries are opt-in in the underlying SDK, so constructing ``agentplatform.Client``
     directly runs without them. A ruff rule enforces using this wrapper instead.

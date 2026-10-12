@@ -37,6 +37,6 @@ must not see, event or schedule triggers, image and video generation. Those are 
 or infrastructure in a LangChain project — design them yourself.
 
 Gemini models: your scaffold already wires up `ChatGoogleGenerativeAI` from `langchain-google-genai`,
-which talks to Vertex AI with your ADC when `GOOGLE_GENAI_USE_VERTEXAI=True` is set (`app/agent.py`
+which talks to Gemini platform with your ADC when `GOOGLE_GENAI_USE_VERTEXAI=True` is set (`app/agent.py`
 sets it). Most of these repos default to Anthropic or OpenAI, so swap the model line and keep the
 rest. Watch for embeddings too: memory and RAG examples often hardcode an OpenAI embedding model.

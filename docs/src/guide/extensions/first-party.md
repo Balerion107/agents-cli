@@ -14,9 +14,9 @@ The LangChain template runs a [LangChain](https://python.langchain.com) agent th
 
 !!! warning "Experimental: deploy to Cloud Run or GKE"
 
-    On Agent Runtime the container serves and traces normally, but the integrations that
+    On Agent Runtime in Gemini platform, the container serves and traces normally, but the integrations that
     expect an ADK app do not work, because this project serves A2A and no `reasoning_engine`
-    routes: `publish gemini-enterprise` is refused (registration invokes `:streamQuery`), the
+    routes: `publish gemini` is refused (registration invokes `:streamQuery`), the
     Console playground cannot invoke the agent, and the Console's session and trace views stay
     empty. Traces still reach Cloud Trace.
 
@@ -24,7 +24,7 @@ The LangChain template runs a [LangChain](https://python.langchain.com) agent th
 
 ```bash
 agents-cli create my-agent \
-    --agent google/agents-cli/extensions/langchain/template@v1.9.0 \
+    --agent google/agents-cli/extensions/langchain/template@v1.10.0 \
     -d cloud_run
 cd my-agent && agents-cli install
 ```
@@ -36,7 +36,7 @@ The scaffolded project contains `agents-cli-extension.yaml` at its root. That fi
 | Command | Behavior in a LangChain project |
 |---------|---------------------------------|
 | `playground` | `uv run langgraph dev` — the local LangGraph dev server (also serves A2A). |
-| `publish gemini-enterprise` | Runs the built-in, except on Agent Runtime, where it refuses with the reason. |
+| `publish gemini` | Runs the built-in, except on Agent Runtime, where it refuses with the reason. |
 | `run` | Invokes the compiled graph in-process. |
 | `eval generate` | Produces the standard `EvaluationDataset` shape, so `eval grade` is unchanged. |
 | `eval dataset synthesize`, `eval optimize` | Refused with an explanation: both drive the agent through ADK. |
@@ -45,7 +45,7 @@ Everything else stays native — **do not override** `deploy` (the target-approp
 
 ### The scaffolded agent
 
-The default `app/agent.py` is a Gemini ReAct agent built with `langchain.agents.create_agent` and a sample `get_weather` tool. It calls Gemini via Vertex AI using Application Default Credentials; set `GOOGLE_API_KEY` or `GEMINI_API_KEY` in `.env` to use AI Studio instead (the scaffolded `.env.example` names the latter).
+The default `app/agent.py` is a Gemini ReAct agent built with `langchain.agents.create_agent` and a sample `get_weather` tool. It calls Gemini on Gemini platform using Application Default Credentials; set `GOOGLE_API_KEY` or `GEMINI_API_KEY` in `.env` to use AI Studio instead (the scaffolded `.env.example` names the latter).
 
 Because the project rides the framework-neutral `empty_py` substrate, the generated code contains **no ADK dependency**, and the template ships its own coding-agent skill.
 
@@ -66,7 +66,7 @@ AGENTS_CLI_DISABLE_OVERRIDES=1 agents-cli run --url https://<service-url> --mode
 ### Full journey
 
 ```bash
-agents-cli create my-agent --agent google/agents-cli/extensions/langchain/template@v1.9.0 -d cloud_run
+agents-cli create my-agent --agent google/agents-cli/extensions/langchain/template@v1.10.0 -d cloud_run
 cd my-agent && agents-cli install
 agents-cli run "what's the weather in San Francisco?"       # in-process graph
 agents-cli eval generate --dataset tests/eval/datasets/basic-dataset.json -o tests/eval/output/

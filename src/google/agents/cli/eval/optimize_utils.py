@@ -85,8 +85,8 @@ def _to_adk_evalset_dict(dataset_data: dict, app_name: str, eval_set_id: str) ->
                     adk_conversation[-1]["final_response"] = content
 
         if current_prompt:
-            # Both ADK and VertexAI use google.genai.types.Content format here
-            # although VertexAI also accepts strings, which we handle below.
+            # Both ADK and the Gemini platform SDK use google.genai.types.Content format here
+            # although the Gemini platform SDK also accepts strings, which we handle below.
             prompt_content = current_prompt
             if isinstance(current_prompt, str):
                 prompt_content = {"parts": [{"text": current_prompt}]}

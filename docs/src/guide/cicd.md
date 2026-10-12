@@ -78,4 +78,4 @@ The pipeline uses Terraform variables defined in `deployment/terraform/variables
 
 ---
 
-Once deployed, register your agent with Gemini Enterprise using `agents-cli publish gemini-enterprise`. Run with `--help` for all options.
+Once deployed, register your agent with Gemini using `agents-cli publish gemini`. Run with `--help` for all options.

@@ -55,7 +55,7 @@ def display_welcome_banner(
         enhance_mode: Whether this is for enhancement mode
         agent_garden: Whether this deployment is from Agent Garden
         setup_cicd_mode: Whether this is for CI/CD setup
-        register_mode: Whether this is for Gemini Enterprise registration
+        register_mode: Whether this is for Gemini registration
         quiet: If True, skip the banner (e.g. in auto-approve/programmatic mode)
     """
     version = _get_version()
@@ -70,7 +70,7 @@ def display_welcome_banner(
     elif setup_cicd_mode:
         line1 = "Setting up CI/CD infrastructure for your agent!"
     elif register_mode:
-        line1 = "Registering your agent to Gemini Enterprise!"
+        line1 = "Registering your agent with Gemini!"
     else:
         line1 = "Create production-ready AI agents on Google Cloud!"
 

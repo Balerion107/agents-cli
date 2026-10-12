@@ -41,6 +41,7 @@ type GetWeatherResult struct {
 }
 
 // GetWeather returns mock weather data for a location.
+// It is a sample tool tested in agent_test.go; update that file if you change it.
 func GetWeather(_ agent.Context, args GetWeatherArgs) (GetWeatherResult, error) {
 	return GetWeatherResult{
 		Weather: "It's sunny and 72°F in " + args.Query,

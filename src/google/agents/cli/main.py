@@ -131,11 +131,13 @@ class _MainGroup(LazyGroup):
     def _mirror_onto_aliases(
         self, dotted: str, resolved: ResolvedCommand, extension_set: ExtensionSet
     ) -> list[str]:
-        """Apply an override of `group.sub` to top-level aliases of the same command.
+        """Apply an override of `group.sub` to other registrations of the same command.
 
         `create` and `scaffold create` are two registrations of one command
         (identical `module:obj` target), so overriding the canonical
-        `scaffold.create` must also take over `create`. The pairing is derived
+        `scaffold.create` must also take over `create`. Aliases inside the
+        group follow the same rule: an override of `publish.gemini-enterprise`
+        also takes over `publish.gemini`, and vice versa. The pairing is derived
         from the registry rather than hardcoded, so it can't rot when a command
         moves — and no extra modules are imported to work it out: the parent
         group is already loaded by the subcommand install above.
@@ -150,10 +152,20 @@ class _MainGroup(LazyGroup):
         entry = parent._lazy_commands.get(sub_name)
         if entry is None:
             return []
+        siblings = [
+            f"{group_name}.{name}"
+            for name, (target, _short_help) in parent._lazy_commands.items()
+            if target == entry[0] and name != sub_name
+        ]
+        top_level = [
+            name
+            for name, (target, _short_help) in self._lazy_commands.items()
+            if target == entry[0]
+        ]
         mirrored: list[str] = []
-        for alias, (target, _short_help) in self._lazy_commands.items():
+        for alias in siblings + top_level:
             # Skip aliases an extension claimed itself — that override wins.
-            if target != entry[0] or alias in extension_set.commands:
+            if alias in extension_set.commands:
                 continue
             if self._install(alias, resolved):
                 mirrored.append(alias)

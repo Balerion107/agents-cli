@@ -27,6 +27,8 @@ from typing import Any, Literal
 
 import yaml
 
+from google.agents.cli._project import NESTED_CREATE_PARAMS
+
 # Patterns use {agent_directory} placeholder replaced at runtime
 FILE_CATEGORIES = {
     "agent_code": [  # Never modified
@@ -209,7 +211,11 @@ def three_way_compare(
             reason="Agent code (never modified by upgrade)",
         )
 
-    if category == "config_files":
+    current_file = project_dir / relative_path
+
+    # A missing config or dependency file falls through to the comparison below
+    # and is created from the new template rather than skipped.
+    if category == "config_files" and current_file.exists():
         return FileCompareResult(
             path=relative_path,
             category=category,
@@ -217,7 +223,7 @@ def three_way_compare(
             reason="Config file (user's environment settings)",
         )
 
-    if category == "dependencies":
+    if category == "dependencies" and current_file.exists():
         return FileCompareResult(
             path=relative_path,
             category=category,
@@ -225,7 +231,6 @@ def three_way_compare(
             reason="Dependencies (requires merge handling)",
         )
 
-    current_file = project_dir / relative_path
     old_template_file = old_template_dir / relative_path
     new_template_file = new_template_dir / relative_path
 
@@ -716,6 +721,24 @@ def union_python_dependencies(
     return _resolve_dependencies(current, old, new)
 
 
+def union_python_base_dependencies(
+    current_project: pathlib.Path,
+    base_dependencies: list[str],
+) -> list[DependencyResolution]:
+    """Union-merge pyproject.toml deps with a list of requirement strings.
+
+    Same as union_python_dependencies, but the new side is a list such as a
+    base template's extra_dependencies, not a pyproject.toml.
+    """
+    current = _load_dependencies_from_pyproject(current_project / "pyproject.toml")
+    new: dict[str, str] = {}
+    for dep in base_dependencies:
+        name, extras, version = _parse_dependency(dep)
+        new[name] = f"{extras}{version}"
+    old = {name: spec for name, spec in current.items() if name in new}
+    return _resolve_dependencies(current, old, new)
+
+
 def union_go_dependencies(
     current_project: pathlib.Path,
     new_template_project: pathlib.Path,
@@ -762,11 +785,12 @@ def update_acli_metadata(
     acli_version: str | None = None,
     remove_keys: list[str] | None = None,
     base_template: str | None = None,
-) -> None:
+) -> bool:
     """Update specific keys in the unified agents-cli-manifest.yaml metadata file.
 
     A manifest that cannot be read or written is logged and skipped: every
     caller writes metadata as a side effect of work that already succeeded.
+    Returns whether the manifest was written.
 
     Args:
         project_dir: Path to the project directory
@@ -778,7 +802,7 @@ def update_acli_metadata(
     manifest_path = project_dir / "agents-cli-manifest.yaml"
     if not manifest_path.exists():
         logging.warning(f"Manifest not found: {manifest_path}")
-        return
+        return False
 
     try:
         with open(manifest_path, encoding="utf-8") as f:
@@ -796,16 +820,32 @@ def update_acli_metadata(
         params = data["create_params"]
 
         for key, val in create_params.items():
-            params[key] = val
+            if key in NESTED_CREATE_PARAMS:
+                section, nested_key = NESTED_CREATE_PARAMS[key]
+                if not isinstance(params.get(section), dict):
+                    params[section] = {}
+                params[section][nested_key] = val
+            else:
+                params[key] = val
 
         if remove_keys:
             for key in remove_keys:
-                params.pop(key, None)
+                if key in NESTED_CREATE_PARAMS:
+                    section, nested_key = NESTED_CREATE_PARAMS[key]
+                    values = params.get(section)
+                    if isinstance(values, dict):
+                        values.pop(nested_key, None)
+                        if not values:
+                            del params[section]
+                else:
+                    params.pop(key, None)
 
         with open(manifest_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
     except Exception as e:
         logging.warning(f"Could not update ACLI metadata in {manifest_path}: {e}")
+        return False
+    return True
 
 
 def migrate_legacy_python_config(

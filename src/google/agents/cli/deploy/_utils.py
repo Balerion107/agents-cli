@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -144,6 +145,58 @@ def parse_kv_flag(flag: str, value: str | None) -> dict[str, str]:
         ) from e
 
 
+def parse_value_list(value_string: str | None) -> list[str]:
+    """Parse a comma-separated list of bare values into a list.
+
+    Splits on commas, strips surrounding whitespace, and drops empty segments,
+    preserving order. Rejects a ``KEY=VALUE`` segment — those belong to
+    ``parse_key_value_pairs``. Returns ``[]`` when the input is ``None`` or empty.
+
+    Raises:
+        ValueError: If a segment is malformed (contains ``=``).
+    """
+    result: list[str] = []
+    if value_string:
+        for item in value_string.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if "=" in item:
+                raise ValueError(f"Malformed value (unexpected '='): {item}")
+            result.append(item)
+    return result
+
+
+def parse_list_flag(flag: str, value: str | None) -> list[str]:
+    """``parse_value_list`` for a CLI flag, failing with a ClickException."""
+    try:
+        return parse_value_list(value)
+    except ValueError as e:
+        raise click.ClickException(
+            f"Error parsing {flag} flag value '{value}': {e}"
+        ) from e
+
+
+def apply_key_value_changes(
+    existing: Mapping[str, str],
+    updates: Mapping[str, str],
+    removals: Sequence[str],
+    clear: bool,
+) -> dict[str, str]:
+    """Return ``existing`` with clear, remove and update changes applied.
+
+    The steps run in order: ``clear`` empties the map, ``removals`` drop keys
+    (missing keys are ignored), then ``updates`` set values. Callers reject a
+    key that is in both ``updates`` and ``removals``. Works on a copy;
+    ``existing`` is never mutated.
+    """
+    resolved = {} if clear else dict(existing)
+    for key in removals:
+        resolved.pop(key, None)
+    resolved.update(updates)
+    return resolved
+
+
 def parse_secrets(secrets_string: str | None) -> dict[str, dict[str, str]]:
     """Parse secrets from ENV_VAR=SECRET_ID or ENV_VAR=SECRET_ID:VERSION format."""
     try:
@@ -175,7 +228,7 @@ def read_project_dotenv(project_root: str | Path) -> dict[str, str]:
 
     Used by the deploy paths to propagate local config to the deployed service.
     Values are copied as-is ("copy the .env" model); callers layer explicit
-    ``--update-env-vars`` on top so the CLI flag always wins.
+    ``--env-vars`` on top so the CLI flag always wins.
     """
     import io
 
@@ -210,5 +263,5 @@ def validate_deployment_region(
             "  Cloud infrastructure (Cloud Run, GKE, Agent Runtime) must be deployed to a single regional location (not a multi-region or zone).\n"
             "  Please specify a valid Google Cloud Platform region (e.g., 'us-central1', 'europe-west4', 'asia-northeast1') via --region or in agents-cli-manifest.yaml.\n"
             "  See https://cloud.google.com/about/locations for valid regions.\n"
-            "  (Note: To configure Gemini model location separately, set GOOGLE_CLOUD_LOCATION in your .env or --update-env-vars)."
+            "  (Note: To configure Gemini model location separately, set GOOGLE_CLOUD_LOCATION in your .env or --env-vars)."
         )

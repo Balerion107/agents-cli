@@ -3,6 +3,28 @@
 All notable changes to this project will be documented in this file.
 
 
+## [1.10.0] - 2026-10-12
+
+- **New projects use Agent Identity by default.** `agents-cli scaffold create` records `agent_runtime_identity_default: agent_identity`. Then `agents-cli deploy` creates the Agent Runtime agent under its own Agent Identity principal, and the generated Terraform (`infra single-project`, `infra cicd`) does the same. To keep a service account, pass `--agent-runtime-identity-default service_account` to `scaffold create` or `scaffold enhance`. Existing projects are not changed: if the setting is missing, it reads as `service_account`, and `scaffold upgrade` does not migrate it.
+  - `deploy` uses this default only when it creates a new agent. A redeploy without `--agent-identity` or `--no-agent-identity` does not change the identity of an existing agent.
+- **Extensions can ship skills.** An extension declares skills in the `skills:` field of `agents-cli-extension.yaml`:
+  - `agents-cli extension add` copies them to `<project>/.agents/skills/`, or to `~/.agents/skills/` with `--global`.
+  - `agents-cli extension update` replaces them with the new version's skills and lists the skills it removed.
+  - `agents-cli extension remove` deletes them. The new `--global` flag removes the user-scope install.
+  - `agents-cli install` restores the skills of every recorded extension.
+  - A skill folder copied by an extension is managed by that extension, and manual modifications to it might be overwritten.
+- `agents-cli extension update` keeps the old local copy when it refuses a new version or a copy fails.
+- New `agents-cli deploy` flags for Agent Runtime and Cloud Run: `--remove-labels KEY,...` and `--clear-labels`. New aliases that match `gcloud run deploy`: `--update-labels`, `--update-secrets` and `--env-vars`.
+- `agents-cli deploy` now rejects `--iap`, `--port`, `--service-account` and `--cluster-name` on targets that ignored them. Before, they were silently ignored. Scripts that pass them may need an update.
+- `agents-cli run` fails with `Agent run failed: <reason>` and a non-zero exit code when the ADK stream sends an error. Before, the run looked successful.
+- `agents-cli scaffold create` shows the dependency changes, like `enhance` and `upgrade` do.
+- `agents-cli scaffold create` keeps the detected project in `.env` when credential checks fail, instead of writing the `your-gcp-project-id` placeholder. It also warns when `--session-type` is ignored for `--deployment-target none`.
+- `agents-cli scaffold enhance` creates missing config and dependency files instead of skipping them.
+- Values in `agents-cli-manifest.yaml` are now escaped, so a quote or newline in a value no longer breaks the file. Project names are limited to `a-z`, `0-9` and `-`.
+- Terminology has been adjusted in various places to use appropriate names for the Gemini ecosystem. No functional change, as old variants are kept as aliases where applicable.
+- The CLI now uses `google-cloud-aiplatform` 2.x, and `gcsfs` is pinned to `>=2026.10.0`. The template lock files are updated.
+- The bundled skills list the Ambient Quality Agent (AQuA) recipe.
+
 ## [1.9.0] - 2026-10-06
 
 - **Usage telemetry is now on by default.** Each command writes one log entry to your own Google Cloud project with the command name, exit code, error class, duration, and CLI, Python and OS versions, never arguments or file contents. Its purpose is to provide users with analytics regarding their tool use, process efficiency, and help diagnose potential issues. The request also sends Google the CLI, Python and OS versions, CPU architecture and command name for usage analytics; no sensitive data is sent. Opt out with `AGENTS_CLI_TELEMETRY=0` or `DO_NOT_TRACK=1`. `agents-cli info` now always shows whether telemetry is on.

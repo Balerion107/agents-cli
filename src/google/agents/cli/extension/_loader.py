@@ -119,6 +119,13 @@ class ExtensionSet:
         ]
 
 
+def is_out_of_range(spec: ExtensionSpec) -> bool:
+    """Whether the running CLI is outside the spec's `requires.agents_cli` range."""
+    if not spec.requires_agents_cli:
+        return False
+    return not is_compatible(__version__, spec.requires_agents_cli)
+
+
 def incompatible_spec(extension_dir: Path) -> ExtensionSpec | None:
     """The spec if it is out of range for this CLI, else None.
 
@@ -126,13 +133,7 @@ def incompatible_spec(extension_dir: Path) -> ExtensionSpec | None:
     absent manifest, or one with no `requires`, returns None.
     """
     spec = load_extension_spec(extension_dir)
-    if (
-        spec
-        and spec.requires_agents_cli
-        and not is_compatible(__version__, spec.requires_agents_cli)
-    ):
-        return spec
-    return None
+    return spec if spec is not None and is_out_of_range(spec) else None
 
 
 def _load_yaml(path: Path) -> dict:

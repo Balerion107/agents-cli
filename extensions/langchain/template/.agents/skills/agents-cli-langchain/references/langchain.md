@@ -29,7 +29,7 @@ Wrap them in a `StateGraph` node if you need to bring one along.
 when you can:
 
 ```bash
-agents-cli create my-lc-agent --agent google/agents-cli/extensions/langchain/template@v1.9.0 -d cloud_run --cicd-runner github_actions
+agents-cli create my-lc-agent --agent google/agents-cli/extensions/langchain/template@v1.10.0 -d cloud_run --cicd-runner github_actions
 ```
 
 For a project that skipped them, `agents-cli scaffold enhance -d cloud_run
@@ -54,7 +54,7 @@ A2A contract the rest of the toolchain expects — so it works unchanged:
   the final reply as a single artifact.
 
 The default `app/agent.py` is a Gemini ReAct agent (`langchain.agents.create_agent`)
-with a sample `get_weather` tool. It uses Vertex AI via Application Default
+with a sample `get_weather` tool. It uses Gemini platform via Application Default
 Credentials, or AI Studio when `GOOGLE_API_KEY` or `GEMINI_API_KEY` is set in the
 environment or `.env` (the scaffolded `.env.example` names the latter).
 
@@ -70,7 +70,7 @@ AGENTS_CLI_DISABLE_OVERRIDES=1 agents-cli run --url https://<service-url> --mode
 - `deploy` — native `agents-cli deploy`; dispatches to the project's configured deployment target.
 - `eval grade`, `eval compare`, `eval analyze` — framework-agnostic.
 - `infra`.
-- `publish gemini-enterprise` — overridden only to refuse on Agent Runtime, where
+- `publish gemini` — overridden only to refuse on Agent Runtime, where
   registration invokes the agent through ADK's `:streamQuery`. On cloud_run and gke
   it runs the built-in, which registers over A2A. To register a LangChain agent,
   deploy it to Cloud Run or GKE and publish from there.
@@ -78,7 +78,7 @@ AGENTS_CLI_DISABLE_OVERRIDES=1 agents-cli run --url https://<service-url> --mode
 ## Journey
 
 ```bash
-agents-cli create my-lc-agent --agent google/agents-cli/extensions/langchain/template@v1.9.0 -d cloud_run
+agents-cli create my-lc-agent --agent google/agents-cli/extensions/langchain/template@v1.10.0 -d cloud_run
 cd my-lc-agent && agents-cli install
 agents-cli run "hello"                     # in-process graph invocation
 agents-cli eval generate --dataset tests/eval/datasets/basic-dataset.json -o tests/eval/output/
@@ -110,7 +110,7 @@ instrumentor rather than ADK's `invoke_agent`/`call_llm`).
 ## Pitfalls
 
 - To run the built-in instead of the override: `AGENTS_CLI_DISABLE_OVERRIDES=1 agents-cli <cmd>`.
-- The default `app/agent.py` calls Gemini via Vertex AI (ADC), so `run`/`eval`
+- The default `app/agent.py` calls Gemini on Gemini platform (ADC), so `run`/`eval`
   need credentials (`GOOGLE_CLOUD_PROJECT` + ADC, or `GOOGLE_API_KEY` /
   `GEMINI_API_KEY` for AI Studio).
 - The deploy contract depends on `app/fast_api_app.py` exposing `app`; keep that

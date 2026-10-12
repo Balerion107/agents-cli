@@ -31,10 +31,17 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
+    field_validator,
     model_validator,
 )
 
 from google.agents.cli.extension._compat import validate_range
+from google.agents.cli.scaffold.utils.fs import (
+    is_ignored_name,
+    is_secret_file,
+    is_windows_device_name,
+)
+from google.agents.cli.skills._bundle import SKILL_PREFIX
 
 # The manifest format version, tracked separately from the agents-cli version.
 # A second format would widen `ExtensionManifest.schema_version` to a Union.
@@ -42,6 +49,10 @@ from google.agents.cli.extension._compat import validate_range
 # in a breaking way, and `v1` is reserved for the point it stops doing so.
 V1ALPHA1 = "agents-cli-extension/v1alpha1"
 EXTENSION_FILE = "agents-cli-extension.yaml"
+# The Agent Skills name rule, since the key becomes the folder that SKILL.md's
+# `name` must match. It also keeps names clear of hidden and staging folders.
+_SKILL_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+_SKILL_NAME_MAX_LENGTH = 64
 
 
 class ExtensionSpecError(Exception):
@@ -88,6 +99,33 @@ class Commands(_Strict):
     add: dict[str, CommandEntry] = Field(default_factory=dict)
 
 
+class SkillEntry(_Strict):
+    path: str = Field(min_length=1)
+
+    @field_validator("path")
+    @classmethod
+    def _inside_extension(cls, value: str) -> str:
+        """Resolved against the vendored copy, which holds nothing outside the extension."""
+        if "\\" in value:
+            raise ValueError("use forward slashes")
+        if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+            raise ValueError("must not contain a control character")
+        path = PurePosixPath(value)
+        if path.is_absolute() or re.match(r"^[A-Za-z]:", value):
+            raise ValueError("must be relative to the extension directory")
+        if ".." in path.parts:
+            raise ValueError("must stay inside the extension directory")
+        if not path.parts:
+            raise ValueError("must name a directory inside the extension")
+        for part in path.parts:
+            if is_ignored_name(part) or is_secret_file(part):
+                raise ValueError(
+                    f"must not use {part!r}: this name is reserved (in any letter "
+                    "case); rename that folder"
+                )
+        return value
+
+
 class Requires(_Strict):
     # `agents_cli: 1.2` is natural YAML and arrives as a number; the range is
     # validated semantically below, and a bad one is dropped rather than fatal.
@@ -108,6 +146,45 @@ class ExtensionManifest(_Strict):
     description: str = ""
     requires: Requires | None = None
     commands: Commands = Field(default_factory=Commands)
+    skills: dict[str, SkillEntry] = Field(
+        default_factory=dict,
+        json_schema_extra={
+            "propertyNames": {
+                "pattern": f"^{_SKILL_NAME_RE.pattern}$",
+                "maxLength": _SKILL_NAME_MAX_LENGTH,
+            }
+        },
+    )
+
+    @field_validator("skills")
+    @classmethod
+    def _skill_names_are_folder_names(
+        cls, value: dict[str, SkillEntry]
+    ) -> dict[str, SkillEntry]:
+        """Each key becomes a folder under `.agents/skills`, so it must not leave it."""
+        for skill_name in value:
+            if len(skill_name) > _SKILL_NAME_MAX_LENGTH:
+                raise ValueError(
+                    f"skill name {skill_name!r} must be at most "
+                    f"{_SKILL_NAME_MAX_LENGTH} characters"
+                )
+            if not _SKILL_NAME_RE.fullmatch(skill_name):
+                raise ValueError(
+                    f"skill name {skill_name!r} must use only lowercase letters, "
+                    "digits and single hyphens, and must not start or end with "
+                    "a hyphen"
+                )
+            if is_windows_device_name(skill_name):
+                raise ValueError(
+                    f"skill name {skill_name!r} is reserved by Windows and cannot "
+                    "be a folder name"
+                )
+            if skill_name.startswith(SKILL_PREFIX):
+                raise ValueError(
+                    f"skill name {skill_name!r}: the {SKILL_PREFIX!r} prefix is "
+                    "reserved for the skills `agents-cli setup` installs"
+                )
+        return value
 
 
 def _describe(error: Mapping[str, Any]) -> str:
@@ -171,6 +248,12 @@ class ExtensionCommand:
 
 
 @dataclass(frozen=True)
+class ExtensionSkill:
+    name: str
+    path: str  # relative to the extension root
+
+
+@dataclass(frozen=True)
 class ExtensionSpec:
     name: str
     description: str
@@ -185,6 +268,9 @@ class ExtensionSpec:
     # exist and the manifest model already validates them, so the rest of the
     # CLI reads a bool rather than re-comparing strings.
     error_on_incompatible: bool = False
+    # Copied only from an installed extension's vendored copy; a project-root
+    # manifest's skills are ignored.
+    skills: tuple[ExtensionSkill, ...] = ()
 
 
 def _to_command(name: str, entry: CommandEntry, kind: str) -> ExtensionCommand:
@@ -237,6 +323,10 @@ def parse_extension_spec(
         commands=tuple(commands),
         requires_agents_cli=requires_agents_cli,
         error_on_incompatible=error_on_incompatible,
+        skills=tuple(
+            ExtensionSkill(name=skill_name, path=entry.path)
+            for skill_name, entry in manifest.skills.items()
+        ),
     )
 
 

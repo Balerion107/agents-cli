@@ -26,15 +26,18 @@ from typing import Any
 
 import yaml
 from cookiecutter.main import cookiecutter
+from rich.markup import escape
 from rich.prompt import Confirm, IntPrompt
 
 from google.agents.cli._defaults import DEFAULT_MODEL
 from google.agents.cli._output import Console
+from google.agents.cli._project import SERVICE_ACCOUNT
 from google.agents.cli._project import root_agent_name as derive_root_agent_name
 
 from .copy_files import (
     DEFAULT_FRONTEND,
     CopyOptions,
+    copy_dir_contents,
     copy_files,
     copy_flat_structure_agent_files,
     copy_frontend_files,
@@ -43,6 +46,7 @@ from .lock_utils import get_lock_filename, is_empty_agent
 from .remote_template import (
     get_base_template_name,
 )
+from .upgrade import DependencyReadError, union_python_base_dependencies
 from .version import agents_cli_version_pin, get_current_version
 
 # =============================================================================
@@ -112,7 +116,7 @@ CONDITIONAL_FILES = {
     "tests/integration/test_server_e2e.py": lambda c: (
         c.get("is_a2a", False) or c.get("template_owns_e2e", False)
     ),
-    # The reasoning-engine adapter is only usable on Agent Engine, which is the
+    # The reasoning-engine adapter is only usable on Agent Runtime, which is the
     # only target that installs aiplatform[agent-engines].
     "{agent_directory}/app_utils/reasoning_engine_adapter.py": (
         lambda c: c.get("deployment_target") == "agent_runtime"
@@ -295,14 +299,38 @@ def add_base_template_dependencies(
 
     console = Console()
 
-    # Show what dependencies will be added
     console.print(
         f"\n✓ Ensuring base template '{base_template_name}' dependencies",
         style="bold cyan",
     )
     console.print("  Adding the following dependencies:", style="white")
-    for dep in base_dependencies:
-        console.print(f"    • {dep}", style="yellow")
+
+    # Compare each base dep with what the template declared, and also list the
+    # template's own deps ("kept") so the user sees every installed dependency.
+    try:
+        resolutions = union_python_base_dependencies(project_path, base_dependencies)
+    except DependencyReadError as e:
+        logging.warning(
+            "Could not compare with the template's dependencies — %s. "
+            "Review your dependency manifest manually after the scaffold.",
+            e,
+        )
+        for dep in base_dependencies:
+            console.print(f"    • {escape(dep)}", style="yellow")
+    else:
+        for resolution in resolutions:
+            name = escape(resolution.name)
+            old_ver = escape(resolution.old_version or "")
+            new_ver = escape(resolution.new_version or "")
+            if resolution.status == "added":
+                line = f"Added: {name}{new_ver}"
+            elif resolution.status == "updated":
+                line = f"Updated: {name} {old_ver} → {new_ver}"
+            elif resolution.status == "unchanged" or resolution.status == "kept":
+                line = f"Kept: {name}{new_ver}"
+            else:
+                continue
+            console.print(f"    • {line}", style="yellow", highlight=False)
 
     return _add_dependencies(
         project_path=project_path,
@@ -401,10 +429,13 @@ def get_overwrite_folders(agent_directory: str) -> list[str]:
 
 TEMPLATE_CONFIG_FILE = "templateconfig.yaml"
 
+# Written to the generated .env when no GCP project could be resolved.
+GCP_PROJECT_PLACEHOLDER = "your-gcp-project-id"
+
 DEPLOYMENT_TARGETS = {
     "agent_runtime": {
         "display_name": "agent_runtime",
-        "description": "Vertex AI managed platform",
+        "description": "Agent Runtime in Gemini platform (fully managed)",
     },
     "cloud_run": {
         "display_name": "cloud_run",
@@ -1019,6 +1050,7 @@ def process_template(
     google_cloud_project: str | None = None,
     bq_analytics: bool = False,
     agent_gateway: bool = False,
+    agent_runtime_identity_default: str = SERVICE_ACCOUNT,
     agent_guidance_filename: str = "GEMINI.md",
     root_agent_name: str = "",
 ) -> None:
@@ -1399,12 +1431,13 @@ def process_template(
                 "agent_garden": agent_garden,
                 "agent_sample_id": agent_sample_id or "",
                 "agent_sample_publisher": agent_sample_publisher or "",
-                "google_cloud_project": google_cloud_project or "your-gcp-project-id",
+                "google_cloud_project": google_cloud_project or GCP_PROJECT_PLACEHOLDER,
                 # Java package variables (only populated for Java projects)
                 "java_package": java_vars.get("java_package", ""),
                 "java_package_path": java_vars.get("java_package_path", ""),
                 "bq_analytics": bq_analytics,
                 "agent_gateway": agent_gateway,
+                "agent_runtime_identity_default": agent_runtime_identity_default,
                 "wheel_gcs_uri": os.environ.get("WHEEL_GCS_URI", ""),
                 "agents_cli_version_pin": agents_cli_version_pin(),
                 "agent_guidance_filename": agent_guidance_filename,
@@ -1483,7 +1516,7 @@ def process_template(
                     )
                 else:
                     # Standard structure: copy as-is
-                    copy_files(
+                    copy_dir_contents(
                         remote_template_path,
                         generated_project_dir,
                         clone_root=template_repo_root,

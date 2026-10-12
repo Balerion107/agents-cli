@@ -17,11 +17,9 @@
 import re
 
 import click
-from agentplatform._genai._evals_constant import (  # noqa: TID251 - b/512125999
-    SUPPORTED_PREDEFINED_METRICS,
-)
 from rich.table import Table
 
+from google.agents.cli import _sdk_compat
 from google.agents.cli._click import LazyGroup
 from google.agents.cli._output import Console
 
@@ -36,7 +34,7 @@ def metric_group():
 def list_metrics():
     """List available out-of-the-box (OOTB) evaluation metrics."""
     metric_names_set = set()
-    for name in SUPPORTED_PREDEFINED_METRICS:
+    for name in _sdk_compat.supported_predefined_metrics():
         base_name = re.sub(r"_v\d+$", "", name)
         metric_names_set.add(base_name.upper())
 

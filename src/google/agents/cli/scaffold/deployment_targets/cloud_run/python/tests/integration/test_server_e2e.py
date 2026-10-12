@@ -246,7 +246,7 @@ def test_agent_card(server_fixture: subprocess.Popen[str]) -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def cleanup_agent_runtime_sessions() -> None:
-    """Cleanup agent engine sessions created during tests."""
+    """Cleanup Agent Runtime sessions created during tests."""
     yield  # Run tests first
 
     # Cleanup after tests complete
@@ -257,17 +257,17 @@ def cleanup_agent_runtime_sessions() -> None:
         default_agent_name = "{{cookiecutter.project_name}}"
         agent_name = os.environ.get("AGENT_ENGINE_SESSION_NAME", default_agent_name)
 
-        # Find and delete agent engines with this name
+        # Find and delete Agent Runtimes with this name
         existing_agents = list(agent_engines.list(filter=f"display_name={agent_name}"))
 
         for agent_runtime in existing_agents:
             try:
                 agent_engines.delete(resource_name=agent_runtime.name)
-                logger.info(f"Cleaned up agent engine: {agent_runtime.name}")
+                logger.info(f"Cleaned up Agent Runtime: {agent_runtime.name}")
             except Exception as e:
                 logger.warning(
-                    f"Failed to cleanup agent engine {agent_runtime.name}: {e}"
+                    f"Failed to cleanup Agent Runtime {agent_runtime.name}: {e}"
                 )
     except Exception as e:
-        logger.warning(f"Failed to cleanup agent engine sessions: {e}")
+        logger.warning(f"Failed to cleanup Agent Runtime sessions: {e}")
 {%- endif %}

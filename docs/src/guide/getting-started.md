@@ -1,6 +1,6 @@
 # Getting Started
 
-**Agents CLI in Agent Platform** is a CLI and skills package for building, evaluating, and deploying AI agents on Google Cloud. Agents are built with Google's [Agent Development Kit (ADK)](https://google.github.io/adk-docs/) — Agents CLI handles everything around it: scaffolding, evaluation, deployment, and observability.
+**Agents CLI in Gemini platform** is a CLI and skills package for building, evaluating, and deploying AI agents on Google Cloud. Agents are built with Google's [Agent Development Kit (ADK)](https://google.github.io/adk-docs/) — Agents CLI handles everything around it: scaffolding, evaluation, deployment, and observability.
 
 It works two ways:
 
@@ -15,8 +15,8 @@ Agents CLI bundles **7 skills** that give your coding agent deep knowledge acros
 | `google-agents-cli-adk-code` | ADK Python API — agents, tools, orchestration, callbacks |
 | `google-agents-cli-scaffold` | Project scaffolding — `create`, `enhance`, `upgrade` |
 | `google-agents-cli-eval` | Evaluation lifecycle — datasets, metrics, generate/grade, compare, analyze, optimize |
-| `google-agents-cli-deploy` | Deployment — Agent Runtime, Cloud Run, GKE, CI/CD |
-| `google-agents-cli-publish` | Gemini Enterprise registration |
+| `google-agents-cli-deploy` | Deployment — Agent Runtime in Gemini platform, Cloud Run, GKE, CI/CD |
+| `google-agents-cli-publish` | Gemini registration |
 | `google-agents-cli-observability` | Cloud Trace, logging, third-party integrations |
 
 ---

@@ -493,6 +493,7 @@ def run_three_way_merge(
     operation_label: str = "upgrade",
     pre_apply_hook: Callable[[pathlib.Path], bool] | None = None,
     post_apply_hook: Callable[[pathlib.Path, str], None] | None = None,
+    post_apply_no_changes_hook: Callable[[pathlib.Path, str], None] | None = None,
 ) -> bool:
     """Shared 3-way merge pipeline used by both *upgrade* and *enhance*.
 
@@ -518,6 +519,10 @@ def run_three_way_merge(
             written.  Receives ``project_dir``.  Return ``False`` to abort.
         post_apply_hook: Optional callback invoked *after* files are
             written (and deps merged).  Receives ``(project_dir, language)``.
+        post_apply_no_changes_hook: Optional callback invoked in place of
+            ``post_apply_hook`` when no project file or dependency needs
+            changing -- for a caller that records something the merge never
+            writes itself, such as the manifest.
 
     Returns:
         ``True`` if the pipeline completed (changes applied, user
@@ -620,7 +625,12 @@ def run_three_way_merge(
         )
         has_dep_changes = any(r.status != "unchanged" for r in dep_resolutions)
         if total_changes == 0 and not has_dep_changes:
-            console.print("[bold green]✅[/bold green] No changes needed!")
+            console.print(
+                "[bold green]✅[/bold green] No changes needed to project files or "
+                "dependencies."
+            )
+            if post_apply_no_changes_hook and not dry_run:
+                post_apply_no_changes_hook(project_dir, language)
             return True
 
         # ── Confirm ──────────────────────────────────────────────────

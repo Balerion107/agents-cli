@@ -15,6 +15,9 @@
 """Shared filesystem helpers for copying project directories."""
 
 import fnmatch
+import ntpath
+import sys
+from pathlib import PureWindowsPath
 
 # Directories/files to exclude when copying a project tree (backups, local
 # template copies, etc.).
@@ -72,10 +75,11 @@ def is_ignored_name(name: str) -> bool:
     """True if *name* matches a ``STANDARD_IGNORE_PATTERNS`` entry.
 
     These are the version-control metadata, caches, build output, and
-    dependency directories a copied tree never carries. Also used to refuse a
-    symlink whose resolved target sits inside one of them.
+    dependency directories a scaffolded template never carries. Also used to refuse a
+    symlink whose resolved target sits inside one of them. Case-insensitive on
+    every OS: on macOS and Windows ``.Git`` opens the same directory as ``.git``.
     """
-    return bool(_matching([name], STANDARD_IGNORE_PATTERNS))
+    return _matches_any_case(name, STANDARD_IGNORE_PATTERNS)
 
 
 def is_secret_file(name: str) -> bool:
@@ -83,11 +87,23 @@ def is_secret_file(name: str) -> bool:
 
     Matches a ``.env`` / ``.env.*`` file (see ``SECRET_IGNORE_PATTERNS``) but
     excludes the value-less env templates (``.env.example`` and friends), which
-    hold no secrets and are meant to be shared.
+    hold no secrets and are meant to be shared. Case-insensitive, like
+    ``is_ignored_name``.
     """
-    if name in ENV_TEMPLATE_NAMES:
+    if name.lower() in ENV_TEMPLATE_NAMES:
         return False
-    return bool(_matching([name], SECRET_IGNORE_PATTERNS))
+    return _matches_any_case(name, SECRET_IGNORE_PATTERNS)
+
+
+def is_windows_device_name(name: str) -> bool:
+    """True if Windows refuses *name* as a file or folder name (``con``, ``nul``).
+
+    Uses ntpath, not os.path, so the answer is the same on every OS.
+    """
+    # is_reserved() is deprecated in 3.13 and removed in 3.15.
+    if sys.version_info >= (3, 13):
+        return ntpath.isreserved(name)
+    return PureWindowsPath(name).is_reserved()
 
 
 def source_ignore_patterns(dir: str, files: list[str]) -> set[str]:
@@ -96,9 +112,15 @@ def source_ignore_patterns(dir: str, files: list[str]) -> set[str]:
     A source is published into somebody else's project — an extension being
     vendored, say — so it leaves behind the standard junk and its credentials.
     """
-    patterns = STANDARD_IGNORE_PATTERNS | SECRET_IGNORE_PATTERNS
-    return set(_matching(files, patterns)) - ENV_TEMPLATE_NAMES
+    # The standard junk follows the OS, so a user folder `Build` is still copied on
+    # Linux and macOS, while a credential is dropped in any letter case.
+    standard = set(_matching(files, STANDARD_IGNORE_PATTERNS))
+    return standard | {f for f in files if is_secret_file(f)}
 
 
 def _matching(files: list[str], patterns: frozenset[str]) -> list[str]:
     return [f for f in files if any(fnmatch.fnmatch(f, p) for p in patterns)]
+
+
+def _matches_any_case(name: str, patterns: frozenset[str]) -> bool:
+    return any(fnmatch.fnmatchcase(name.lower(), p.lower()) for p in patterns)

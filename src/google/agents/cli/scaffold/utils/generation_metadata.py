@@ -13,19 +13,40 @@
 # limitations under the License.
 
 
-from google.agents.cli._project import ProjectConfig
+from google.agents.cli._project import ProjectConfig, parse_version
 from google.agents.cli.scaffold.utils import remote_template
+
+# Last version where `scaffold create` doesn't recognize the
+# `--agent-runtime-identity-default` flag.
+_LAST_RELEASE_WITHOUT_AGENT_RUNTIME_IDENTITY_DEFAULT = parse_version("1.9.0")
+
+
+def _predates_agent_runtime_identity_default_flag(target_version: str) -> bool:
+    try:
+        return (
+            parse_version(target_version)
+            <= _LAST_RELEASE_WITHOUT_AGENT_RUNTIME_IDENTITY_DEFAULT
+        )
+    except ValueError:
+        return False
 
 
 def metadata_to_cli_args(
     metadata: ProjectConfig,
     *,
     for_enhance: bool = False,
+    target_version: str | None = None,
 ) -> list[str]:
     """Convert ProjectConfig to CLI arguments for re-creating or enhancing a project.
 
     Maps agents-cli-manifest.yaml metadata back to CLI arguments.
     Used by upgrade/enhance commands to re-template old/new versions.
+
+    Args:
+        metadata: The project configuration to convert.
+        for_enhance: Returns the args for ``enhance`` rather than ``create``.
+        target_version: The agents-cli release that will consume these args.
+            None means "target the current version".
     """
     args: list[str] = []
 
@@ -53,6 +74,12 @@ def metadata_to_cli_args(
         # it -- and needs none: it re-reads the name from the manifest it is
         # standing in. Passing it would abort with "No such option".
         skip_keys.add("root_agent_name")
+
+    if target_version is not None and _predates_agent_runtime_identity_default_flag(
+        target_version
+    ):
+        skip_keys.add("agent_runtime_identity_default")
+
     for key, value in metadata.create_params.items():
         if key in skip_keys:
             continue

@@ -2,7 +2,7 @@
 
 *For beginners who want to build, evaluate, and deploy an agent using a coding agent.*
 
-This tutorial shows the full Agents CLI in Agent Platform experience — you talk to your coding agent, and it builds, evaluates, and deploys an ADK agent for you.
+This tutorial shows the full Agents CLI in Gemini platform experience — you talk to your coding agent, and it builds, evaluates, and deploys an ADK agent for you.
 
 You'll build a **caveman compressor**: an agent that takes verbose text and grunts it down to terse, caveman-style summaries. Inspired by [caveman](https://github.com/JuliusBrussee/caveman).
 
@@ -77,7 +77,7 @@ agents-cli run "Please help me understand the deployment options available for m
 Output:
 
 ```
-Deploy options: Agent Runtime, Cloud Run, GKE. Pick one. Ship.
+Deploy options: Agent Runtime in Gemini platform, Cloud Run, GKE. Pick one. Ship.
 ```
 
 ---

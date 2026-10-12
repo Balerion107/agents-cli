@@ -26,17 +26,14 @@ from typing import Any, Literal, get_args
 import backoff
 import click
 import yaml
-from agentplatform._genai import _evals_visualization  # noqa: TID251 - b/512125999
-from agentplatform._genai._evals_constant import (  # noqa: TID251 - b/512125999
-    SUPPORTED_PREDEFINED_METRICS,
-)
 
+from google.agents.cli import _sdk_compat
 from google.agents.cli._agent_platform_types import types as vertex_types
 from google.agents.cli._output import Console
 
 Execution = Literal["local", "remote"]
 
-# Vertex eval services support only a subset of GCP regions. Default to
+# The Eval Service in Gemini platform supports only a subset of GCP regions. Default to
 # `global` rather than the project deploy region (which may be unsupported);
 # the service rejects an unsupported --region.
 DEFAULT_EVAL_REGION = "global"
@@ -47,7 +44,7 @@ def load_eval_dotenv(start_dir: Path) -> None:
 
     Mirrors the eval runners' ``_load_agent_dotenv``: scoring must see the same
     config the agent uses -- notably the model backend (``GEMINI_API_KEY`` for
-    AI Studio, ``GOOGLE_CLOUD_*`` for Vertex) needed by local model-calling
+    AI Studio, ``GOOGLE_CLOUD_*`` for Gemini platform) needed by local model-calling
     metrics (e.g. an LLM-judge via google-genai). Pre-existing OS env vars win
     (``override=False``), matching ADK's ``load_dotenv_for_agent``.
     """
@@ -62,7 +59,7 @@ def load_eval_dotenv(start_dir: Path) -> None:
 
 
 def resolve_eval_region(region: str | None) -> str:
-    """Return the region for Vertex eval-service calls.
+    """Return the region for Eval Service calls.
 
     Returns ``region`` if set, otherwise ``global``. The project deploy region
     is not used.
@@ -263,7 +260,7 @@ def _is_sdk_computed_metric(name: str) -> bool:
 
     `_transformers.t_metrics` special-cases `exact_match`, `bleu` and `rouge*`
     ahead of the predefined branch, so they work while being absent from
-    SUPPORTED_PREDEFINED_METRICS.
+    `_sdk_compat.supported_predefined_metrics()`.
     """
     lowered = name.lower()
     return lowered in ("exact_match", "bleu") or lowered.startswith("rouge")
@@ -277,13 +274,14 @@ def _resolve_predefined_metric_name(name: str) -> str | None:
     bare name is matched against each registered version.
     """
     lowered = name.lower()
-    if lowered in SUPPORTED_PREDEFINED_METRICS:
+    supported = _sdk_compat.supported_predefined_metrics()
+    if lowered in supported:
         return lowered
     matches = [
         match
         for match in (
             re.fullmatch(rf"{re.escape(lowered)}_v(\d+)", candidate)
-            for candidate in SUPPORTED_PREDEFINED_METRICS
+            for candidate in supported
         )
         if match
     ]
@@ -320,15 +318,16 @@ def prepare_eval_metrics(
         raise click.ClickException(f"Configuration file not found at {config_path}.")
 
     if custom_metrics_pool and console:
-        predefined_names = set(SUPPORTED_PREDEFINED_METRICS)
-        for p_name in SUPPORTED_PREDEFINED_METRICS:
+        supported = _sdk_compat.supported_predefined_metrics()
+        predefined_names = set(supported)
+        for p_name in supported:
             base = re.sub(r"_v\d+$", "", p_name)
             predefined_names.add(base)
         overlapping = {
             name
             for name in set(custom_metrics_pool.keys()) & predefined_names
             if _defines_own_metric_body(custom_metrics_pool[name])
-            and name.lower() not in SUPPORTED_PREDEFINED_METRICS
+            and name.lower() not in supported
         }
         if overlapping:
             console.print(
@@ -467,7 +466,7 @@ def save_evaluation_artifacts(
     metadata_dataset = []
     try:
         for evaluation_dataset in result.evaluation_dataset or []:
-            rows = _evals_visualization._extract_dataset_rows(evaluation_dataset)
+            rows = _sdk_compat.dataset_rows(evaluation_dataset)
             metadata_dataset.extend(rows)
     except Exception as e:
         console.print(
@@ -490,7 +489,7 @@ def save_evaluation_artifacts(
 
     # Dump HTML results
     try:
-        html_content = _evals_visualization._get_evaluation_html(json.dumps(dumpable))
+        html_content = _sdk_compat.evaluation_html(json.dumps(dumpable))
 
         if html_content:
             with open(html_path, "w", encoding="utf-8") as f:

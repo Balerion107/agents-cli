@@ -24,9 +24,9 @@ from pathlib import Path
 
 import agentplatform
 import click
-from agentplatform._genai import _evals_visualization  # noqa: TID251 - b/512125999
 from rich.table import Table
 
+from google.agents.cli import _sdk_compat
 from google.agents.cli._agent_platform import AgentPlatformClient
 from google.agents.cli._gcp_project import resolve_gcp_project
 from google.agents.cli._output import Console
@@ -133,7 +133,9 @@ def cmd_analyze(
     try:
         client = AgentPlatformClient(project=resolved_project, location=resolved_location)
     except Exception as e:
-        raise click.ClickException(f"Failed to instantiate Vertex AI Client: {e}") from e
+        raise click.ClickException(
+            f"Failed to instantiate Gemini platform client: {e}"
+        ) from e
 
     config = {}
     if top_k is not None:
@@ -157,8 +159,7 @@ def cmd_analyze(
     if output_format.lower() == "html":
         try:
             json_str = response.model_dump_json(exclude_none=True)
-            # TODO: Use public metthods once SDK exposes them (b/512125999)
-            serialized_output = _evals_visualization._get_loss_analysis_html(json_str)
+            serialized_output = _sdk_compat.loss_analysis_html(json_str)
         except Exception as e:
             raise click.ClickException(
                 f"Failed to build HTML visualization output: {e}"

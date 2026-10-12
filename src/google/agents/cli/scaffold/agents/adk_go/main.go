@@ -85,7 +85,7 @@ func main() {
 		log.Fatalf("Failed to create agent: %v", err)
 	}
 
-	// Select the session backend (in-memory, Vertex AI, or Cloud SQL) from the environment.
+	// Select the session backend (in-memory, Agent Runtime, or Cloud SQL) from the environment.
 	sessionService, err := sessions.NewService(ctx)
 	if err != nil {
 		log.Fatalf("Failed to create session service: %v", err)
@@ -129,7 +129,7 @@ func main() {
 	// Assemble the launcher by hand (instead of full.NewLauncher) to include additional sublaunchers:
 	// appinfo - for agent metadata used by evals
 {%- if cookiecutter.deployment_target == 'agent_runtime' %}
-	// agentengine - for compatibility with Vertex Playground
+	// agentengine - for compatibility with the Google Cloud console playground
 {%- endif %}
 	l := universal.NewLauncher(
 		console.NewLauncher(),
@@ -139,7 +139,7 @@ func main() {
 			pubsub.NewLauncher(),
 			eventarc.NewLauncher(),
 {%- if cookiecutter.deployment_target == 'agent_runtime' %}
-			// The Agent Engine id is the AppName its session handlers use, so it
+			// The agentengine launcher's ID is the AppName its session handlers use, so it
 			// tracks the served app name rather than the agent's name.
 			agentengine.NewLauncher(appName),
 {%- endif %}

@@ -42,9 +42,9 @@ No Google Cloud project required.
 !!! note
     The API key supports local development commands: `dev`, `run`, `eval`. Deployment to Google Cloud requires Level 3 auth.
 
-### Option B: Google Cloud (Vertex AI)
+### Option B: Google Cloud (Gemini platform)
 
-Required for Vertex AI models, enterprise features, and deployment.
+Required for Gemini platform models, enterprise features, and deployment.
 
 ```bash
 agents-cli login -i
@@ -66,9 +66,9 @@ export GOOGLE_GENAI_USE_ENTERPRISE=TRUE
 
 ## Level 3: Deployment Auth
 
-If you set up Level 2, Option B (Vertex AI), you're already authenticated for deployment — it's the same ADC credential. Beyond model access, ADC also unlocks:
+If you set up Level 2, Option B (Gemini platform), you're already authenticated for deployment — it's the same ADC credential. Beyond model access, ADC also unlocks:
 
-- `agents-cli deploy` — deploy to Agent Runtime, Cloud Run, or GKE
+- `agents-cli deploy` — deploy to Agent Runtime in Gemini platform, Cloud Run, or GKE
 - `agents-cli infra single-project` / `agents-cli infra cicd` — provision infrastructure and CI/CD with Terraform
 
 Deployment requires a Google Cloud project with billing enabled and appropriate IAM permissions (varies by target).

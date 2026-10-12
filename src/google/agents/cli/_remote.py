@@ -153,7 +153,7 @@ def build_remote_headers(
     Auto-detects Google Cloud credentials unless the caller supplies
     an ``Authorization`` header via ``--header``.
 
-    Uses an **access token** for Vertex AI / Agent Runtime URLs and an
+    Uses an **access token** for Gemini platform / Agent Runtime URLs and an
     **identity token** (with the service URL as audience) for everything
     else (Cloud Run, GKE, etc.).
     """

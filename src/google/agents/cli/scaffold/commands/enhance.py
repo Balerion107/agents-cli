@@ -90,6 +90,8 @@ def build_args_from_config(
     project_config: ProjectConfig,
     auto_approve: bool = False,
     cli_overrides: dict[str, str] | None = None,
+    *,
+    target_version: str | None,
 ) -> list[str]:
     """Build CLI arguments from project config.
 
@@ -97,6 +99,8 @@ def build_args_from_config(
         project_config: The ProjectConfig object
         auto_approve: If True, add --auto-approve to args
         cli_overrides: Additional CLI args to merge (e.g., from original command)
+        target_version: The agents-cli release that will run these args, or
+            None for the current one.
 
     Returns:
         List of CLI arguments to pass to enhance command
@@ -110,7 +114,11 @@ def build_args_from_config(
         args.append("--auto-approve")
 
     # Add saved config options (single source of truth for how to convert them)
-    args.extend(metadata_to_cli_args(project_config, for_enhance=True))
+    args.extend(
+        metadata_to_cli_args(
+            project_config, for_enhance=True, target_version=target_version
+        )
+    )
 
     # Merge CLI overrides (these take precedence over saved config)
     # This ensures user-provided args like --cicd-runner are passed through
@@ -328,7 +336,12 @@ def check_and_execute_with_saved_config(
         return _prompt_customize_overrides(project_config)
 
     # non-interactive mode: use saved config as-is via subprocess
-    args = build_args_from_config(project_config, mode.auto_approve, cli_overrides)
+    args = build_args_from_config(
+        project_config,
+        mode.auto_approve,
+        cli_overrides,
+        target_version=project_version if use_different_version else None,
+    )
     # --force and --dry-run were introduced in this version; strip them
     # when re-executing against an older locked version to avoid crashes.
     is_older_version = (
@@ -647,7 +660,7 @@ def _stale_manifest_keys_for_target(
 ) -> list[str]:
     """Return manifest keys that should be removed for the resolved target.
 
-    agent_runtime handles sessions through Agent Platform internally, so any
+    agent_runtime handles sessions through Gemini platform internally, so any
     stored session_type is meaningless there. cloud_run and gke both consume
     session_type in their templates, so the value must carry through for them.
     """
@@ -736,7 +749,9 @@ def _run_smart_merge(
     )
 
     # -- Post-apply hook: update manifest with new config --------------------
-    def _update_metadata(proj_dir: pathlib.Path, lang: str) -> None:
+    def _update_metadata(
+        proj_dir: pathlib.Path, lang: str, *, stamp_version: bool = True
+    ) -> None:
         if not cli_overrides:
             return
         metadata_updates: dict[str, Any] = {
@@ -750,15 +765,28 @@ def _run_smart_merge(
         # overrides such as ``prototype`` out of the manifest).
         if "agent_gateway" in cli_overrides:
             metadata_updates["agent_gateway"] = cli_overrides["agent_gateway"]
+        effective_deployment = cli_overrides.get(
+            "deployment_target", project_config.deployment_target
+        )
+        if "session_type" in metadata_updates and effective_deployment not in (
+            "cloud_run",
+            "gke",
+        ):
+            # create renders in-memory sessions outside cloud_run/gke; record
+            # that so later runs don't replay (and re-warn about) the ignored value.
+            metadata_updates["session_type"] = "in_memory"
         stale_keys = _stale_manifest_keys_for_target(cli_overrides, project_config)
 
-        if metadata_updates or stale_keys:
-            update_acli_metadata(
-                proj_dir,
-                metadata_updates,
-                acli_version=get_current_version(),
-                remove_keys=stale_keys or None,
-            )
+        if (metadata_updates or stale_keys) and update_acli_metadata(
+            proj_dir,
+            metadata_updates,
+            acli_version=get_current_version() if stamp_version else None,
+            remove_keys=stale_keys or None,
+        ):
+            console.print("Recorded changes to agents-cli-manifest.yaml.")
+
+    def _update_metadata_only(proj_dir: pathlib.Path, lang: str) -> None:
+        _update_metadata(proj_dir, lang, stamp_version=False)
 
     return run_three_way_merge(
         project_dir=project_dir,
@@ -773,6 +801,7 @@ def _run_smart_merge(
         operation_label="enhancement",
         pre_apply_hook=backup_hook,
         post_apply_hook=_update_metadata,
+        post_apply_no_changes_hook=_update_metadata_only,
     )
 
 
@@ -847,6 +876,7 @@ def enhance(
     skip_welcome: bool = False,
     bq_analytics: bool = False,
     agent_gateway: bool | None = None,
+    agent_runtime_identity_default: str | None = None,
     agent_guidance_filename: str = "GEMINI.md",
 ) -> None:
     """Enhance your existing project with deployment, CI/CD, or RAG scaffolding.
@@ -896,6 +926,10 @@ def enhance(
         cli_override_args["agent_guidance_filename"] = agent_guidance_filename
     if agent_gateway is not None:
         cli_override_args["agent_gateway"] = agent_gateway
+    if agent_runtime_identity_default:
+        cli_override_args["agent_runtime_identity_default"] = (
+            agent_runtime_identity_default
+        )
 
     # Smart-merge is the default when saved config exists (unless --force).
     # Skip if running in subprocess with saved config (subprocess re-execution
@@ -1384,6 +1418,7 @@ def enhance(
             "cicd_runner": cicd_runner,
             "session_type": session_type,
             "agent_gateway": agent_gateway,
+            "agent_runtime_identity_default": agent_runtime_identity_default,
         },
     )
 
@@ -1417,6 +1452,9 @@ def enhance(
         cli_overrides=final_cli_overrides if final_cli_overrides else None,
         bq_analytics=bq_analytics,
         agent_gateway=effective_create_params["agent_gateway"],
+        agent_runtime_identity_default=effective_create_params[
+            "agent_runtime_identity_default"
+        ],
         agent_guidance_filename=agent_guidance_filename,
     )
 

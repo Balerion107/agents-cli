@@ -32,6 +32,17 @@ import yaml
 # ADK; new projects get the value from their template.
 DEFAULT_FRAMEWORK = "google-adk"
 
+# Values of create_params.agent_runtime.identity_default.
+AGENT_IDENTITY = "agent_identity"
+SERVICE_ACCOUNT = "service_account"
+AGENT_RUNTIME_IDENTITY_DEFAULTS = (AGENT_IDENTITY, SERVICE_ACCOUNT)
+
+# create_params the manifest keeps in a per-target section, as flat key ->
+# (section, key in the section). The flat key is the ProjectConfig field.
+NESTED_CREATE_PARAMS = {
+    "agent_runtime_identity_default": ("agent_runtime", "identity_default"),
+}
+
 
 @dataclass
 class ProjectConfig:
@@ -50,6 +61,7 @@ class ProjectConfig:
     cicd_runner: str = "skip"
     agent_gateway: bool = False
     agent_guidance_filename: str = "GEMINI.md"
+    agent_runtime_identity_default: str = SERVICE_ACCOUNT
     # The ADK name of the root agent. Empty means "derive it from the project
     # name"; see resolve_root_agent_name.
     root_agent_name: str = ""
@@ -64,6 +76,7 @@ class ProjectConfig:
             "agent_gateway": self.agent_gateway,
             "agent_guidance_filename": self.agent_guidance_filename,
             "root_agent_name": self.root_agent_name,
+            "agent_runtime_identity_default": self.agent_runtime_identity_default,
         }
 
     @classmethod
@@ -104,6 +117,24 @@ class ProjectConfig:
         cfg.is_a2a = create_params.get("is_a2a", cfg.is_a2a)
         cfg.agent_gateway = create_params.get("agent_gateway", cfg.agent_gateway)
         cfg.root_agent_name = create_params.get("root_agent_name") or ""
+
+        for flat_key, (section, key) in NESTED_CREATE_PARAMS.items():
+            values = create_params.get(section)
+            if values is None:
+                continue
+            if not isinstance(values, Mapping):
+                raise click.ClickException(
+                    f"malformed create_params.{section} in {filename}"
+                )
+            if key in values:
+                setattr(cfg, flat_key, values[key])
+
+        if cfg.agent_runtime_identity_default not in AGENT_RUNTIME_IDENTITY_DEFAULTS:
+            raise click.ClickException(
+                f"invalid create_params.agent_runtime.identity_default in {filename}: "
+                f"'{cfg.agent_runtime_identity_default}' is not one of "
+                f"{', '.join(AGENT_RUNTIME_IDENTITY_DEFAULTS)}"
+            )
 
         return cfg
 
@@ -182,7 +213,7 @@ def read_project_config(project_dir: str | None = None) -> ProjectConfig:
         return ProjectConfig()
 
 
-def _parse_version(v: str) -> tuple[int, ...]:
+def parse_version(v: str) -> tuple[int, ...]:
     """Parse a dotted numeric version into a comparable tuple.
 
     Raises ``ValueError`` on non-numeric components (e.g. a ``0.0.0-dev``
@@ -201,7 +232,7 @@ def scaffold_older_than(cfg: ProjectConfig, version: str) -> bool:
     if not cfg.acli_version:
         return False
     try:
-        return _parse_version(cfg.acli_version) < _parse_version(version)
+        return parse_version(cfg.acli_version) < parse_version(version)
     except ValueError:
         return False
 
@@ -220,8 +251,8 @@ def check_cli_version(cfg: ProjectConfig) -> None:
     from google.agents.cli import __version__
 
     try:
-        project_ver = _parse_version(acli_version)
-        cli_ver = _parse_version(__version__)
+        project_ver = parse_version(acli_version)
+        cli_ver = parse_version(__version__)
     except ValueError:
         return
 

@@ -25,7 +25,7 @@ from corrupting or overwriting deployment state.
 
 Note on distributed environments: cross-machine / CI runners that do not share
 a local filesystem are explicitly out of reach for local-file state. In such
-environments, concurrency control relies on remote Agent Engine revalidation
+environments, concurrency control relies on remote Agent Runtime revalidation
 and target-side API conflict rejection.
 """
 

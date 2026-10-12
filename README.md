@@ -1,7 +1,7 @@
 <div align="center">
   <img src="https://raw.githubusercontent.com/google/agents-cli/main/docs/src/assets/logo_sm.png" alt="agents-cli logo" width="120" />
   <h1><code>agents-cli</code></h1>
-  <p>The CLI and skills for building agents on Gemini Enterprise Agent Platform.</p>
+  <p>The CLI and skills for building agents on Gemini platform.</p>
 
   <p>
     <a href="#get-started">Get Started</a> &nbsp;&nbsp;|&nbsp;&nbsp;
@@ -19,7 +19,7 @@
 
 Turn your favorite coding assistant into an expert at building and deploying agents on Google Cloud.
 
-**Agents CLI in Agent Platform** (`agents-cli`) gives your coding agent the skills and commands to build, scale, govern, and optimize enterprise-grade agents — so you don't have to learn every CLI and service yourself.
+**Agents CLI in Gemini platform** (`agents-cli`) gives your coding agent the skills and commands to build, scale, govern, and optimize enterprise-grade agents — so you don't have to learn every CLI and service yourself.
 
 **Works seamlessly with:**
 [Antigravity CLI](https://antigravity.google/) &nbsp;•&nbsp; [Claude Code](https://docs.anthropic.com/en/docs/claude-code) &nbsp;•&nbsp; [Codex](https://github.com/openai/codex) &nbsp;•&nbsp; *and any other coding agent.*
@@ -65,8 +65,8 @@ See the [full tutorial](https://google.github.io/agents-cli/guide/quickstart-tut
 | `google-agents-cli-adk-code` | ADK Python API — agents, tools, orchestration, callbacks, state |
 | `google-agents-cli-scaffold` | Project scaffolding — `create`, `enhance`, `upgrade` |
 | `google-agents-cli-eval` | Evaluation methodology — metrics, datasets, LLM-as-judge, adaptive rubrics |
-| `google-agents-cli-deploy` | Deployment — [Agent Runtime](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale), [Cloud Run](https://cloud.google.com/run), [GKE](https://cloud.google.com/kubernetes-engine), CI/CD, secrets |
-| `google-agents-cli-publish` | Gemini Enterprise registration |
+| `google-agents-cli-deploy` | Deployment — [Agent Runtime in Gemini platform](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale), [Cloud Run](https://cloud.google.com/run), [GKE](https://cloud.google.com/kubernetes-engine), CI/CD, secrets |
+| `google-agents-cli-publish` | Gemini registration |
 | `google-agents-cli-observability` | Observability — Cloud Trace, logging, third-party integrations |
 
 ---
@@ -79,7 +79,7 @@ See the [full tutorial](https://google.github.io/agents-cli/guide/quickstart-tut
 | `agents-cli create <name>` | Create a new agent project |
 | `agents-cli eval run` | Run the agent over the eval dataset and grade the traces |
 | `agents-cli deploy` | Deploy to Google Cloud |
-| `agents-cli publish gemini-enterprise` | Register with Gemini Enterprise |
+| `agents-cli publish gemini` | Register with Gemini |
 
 <details>
 <summary>See all commands</summary>
@@ -107,7 +107,7 @@ See the [full tutorial](https://google.github.io/agents-cli/guide/quickstart-tut
 | `agents-cli eval optimize` | Auto-tune agent prompts using eval data |
 | **Deploy & Publish** | |
 | `agents-cli deploy` | Deploy to Google Cloud |
-| `agents-cli publish gemini-enterprise` | Register with Gemini Enterprise |
+| `agents-cli publish gemini` | Register with Gemini |
 | `agents-cli infra single-project` | Provision single-project infrastructure |
 | `agents-cli infra cicd` | Set up CI/CD pipeline + staging/prod infrastructure |
 | **Other** | |

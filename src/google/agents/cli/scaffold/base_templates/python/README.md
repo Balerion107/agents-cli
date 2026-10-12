@@ -80,7 +80,7 @@ You can also use features from the [ADK](https://adk.dev/) CLI with `uv run adk`
 | `agents-cli deploy`  | Deploy agent to {{ 'GKE' if cookiecutter.deployment_target == 'gke' else 'Cloud Run' }}                                                                   |
 {%- elif cookiecutter.deployment_target == 'agent_runtime' %}
 | `agents-cli deploy`  | Deploy agent to Agent Runtime                                                                |
-| `agents-cli publish gemini-enterprise` | Register deployed agent to Gemini Enterprise                    |
+| `agents-cli publish gemini` | Register deployed agent with Gemini                                    |
 {%- endif -%}
 | [A2A Inspector](https://github.com/a2aproject/a2a-inspector) | Launch A2A Protocol Inspector                                                        |
 {%- if cookiecutter.cicd_runner != 'skip' %}

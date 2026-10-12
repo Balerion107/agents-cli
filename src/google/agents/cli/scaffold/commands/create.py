@@ -16,6 +16,7 @@ import functools
 import logging
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -28,12 +29,12 @@ from rich.prompt import IntPrompt, Prompt
 
 from google.agents.cli._gcp_project import resolve_gcp_project
 from google.agents.cli._output import Console
-from google.agents.cli._project import find_project_config
+from google.agents.cli._project import AGENT_IDENTITY, find_project_config
 
 from ..utils import cli_options, remote_template, template
 from ..utils.cli_options import InteractionMode
 from ..utils.command import run_gcloud_command
-from ..utils.copy_files import CopyOptions, copy_files
+from ..utils.copy_files import CopyOptions, copy_dir_contents
 from ..utils.gcp import verify_credentials_and_vertex
 from ..utils.logging import display_welcome_banner
 from ..utils.symlinks import find_repo_boundary
@@ -91,6 +92,7 @@ class CreationInputs:
     prototype: bool
     agent_garden: bool
     agent_gateway: bool | None
+    agent_runtime_identity_default: str | None
     agent_directory: str | None
     root_agent_name: str | None
     agent_guidance_filename: str
@@ -129,6 +131,7 @@ class RenderPlan:
     session_type: str | None
     region: str
     google_cloud_project: str | None
+    agent_runtime_identity_default: str
 
 
 def _handle_create_errors(f: Callable) -> Callable:
@@ -224,6 +227,7 @@ def create(
     cli_overrides: dict | None = None,
     bq_analytics: bool = False,
     agent_gateway: bool | None = None,
+    agent_runtime_identity_default: str | None = None,
     agent_guidance_filename: str = "GEMINI.md",
 ) -> None:
     """Create GCP-based AI agent projects from templates."""
@@ -245,6 +249,7 @@ def create(
         prototype=prototype,
         agent_garden=agent_garden,
         agent_gateway=agent_gateway,
+        agent_runtime_identity_default=agent_runtime_identity_default,
         agent_directory=agent_directory,
         root_agent_name=root_agent_name,
         agent_guidance_filename=agent_guidance_filename,
@@ -445,7 +450,7 @@ def _apply_adk_python_quickstart(
     Returns updated ``(inputs, mode)`` copies with those values applied.
     """
     console.print(
-        "⚡ ADK quickstart: adk + Agent Runtime + prototype mode\n",
+        "⚡ ADK quickstart: adk + Agent Runtime in Gemini platform + prototype mode\n",
         style="cyan",
     )
     if inputs.agent and inputs.agent != "adk":
@@ -686,7 +691,7 @@ def _resolve_local_spec(
     temp_dir = tempfile.mkdtemp(prefix="acli_local_template_")
     template_source_path = pathlib.Path(temp_dir) / local_path.name
     try:
-        copy_files(
+        copy_dir_contents(
             local_path,
             template_source_path,
             clone_root=clone_root,
@@ -1173,9 +1178,13 @@ def _resolve_project(
     if inputs.agent_gateway and final_deployment != "agent_runtime":
         raise click.UsageError(
             f"--agent-gateway is not supported for deployment target '{final_deployment}'.\n"
-            "  Agent Gateway can only be bound to Agent Runtime deployments.\n"
+            "  Agent Gateway can only be bound to deployments on Agent Runtime in Gemini platform.\n"
             "  Use --deployment-target agent_runtime, or drop --agent-gateway."
         )
+
+    final_agent_runtime_identity_default = (
+        inputs.agent_runtime_identity_default or AGENT_IDENTITY
+    )
 
     final_session_type = _resolve_session_type(
         session_type=inputs.session_type,
@@ -1224,6 +1233,7 @@ def _resolve_project(
         session_type=final_session_type,
         region=region,
         google_cloud_project=creds_info.get("project"),
+        agent_runtime_identity_default=final_agent_runtime_identity_default,
     )
 
 
@@ -1313,7 +1323,7 @@ def _resolve_session_type(
         if session_type:
             console.print(
                 "Warning: --session-type cannot be used with agent_runtime deployment target, it will be unset. "
-                "Agent Runtime handles session management internally.",
+                "Agent Runtime in Gemini platform handles session management internally.",
                 style="yellow",
             )
             return "none"
@@ -1331,6 +1341,12 @@ def _resolve_session_type(
             )
         return "in_memory"
 
+    if session_type and session_type != "in_memory":
+        console.print(
+            "Warning: --session-type is only supported for cloud_run and gke deployment targets; "
+            "it will be ignored and in-memory sessions will be used.",
+            style="yellow",
+        )
     return "in_memory"
 
 
@@ -1397,7 +1413,7 @@ def _resolve_region(
         # Show Agent Runtime supported regions link if agent_garden flag is set
         if agent_garden:
             console.print(
-                "\n📍 [blue]Agent Runtime Supported Regions:[/blue]\n"
+                "\n📍 [blue]Regions supported by Agent Runtime in Gemini platform:[/blue]\n"
                 "   [cyan]https://cloud.google.com/vertex-ai/generative-ai/docs/agent-engine/overview#supported-regions[/cyan]"
             )
         region = prompt_region_confirmation(region, agent_garden=agent_garden)
@@ -1455,10 +1471,10 @@ def _resolve_gcp_creds(
             logging.debug("GCP environment setup failed: %s", e)
             console.print(f"> ⚠️  {e}", style="bold yellow")
             console.print("> Continuing with template processing...", style="yellow")
-            return {}
 
-    # Skipping checks: still try to resolve a project ID so the generated
-    # .env has a valid value for local development.
+    # Checks skipped or failed (e.g. the aiplatform.googleapis.com API not enabled): still try to
+    # resolve a project ID so the generated .env has a valid value for local
+    # development.
     try:
         project_id = resolve_gcp_project()
         if project_id:
@@ -1561,7 +1577,7 @@ def _handle_interactive_credentials(context: str | None = None) -> dict:
 
     choices = ["y", "skip", "edit"]
     response = Prompt.ask(
-        "> Do you want to continue? (The CLI will check if Vertex AI is enabled in this project)",
+        "> Do you want to continue? (The CLI will check if the aiplatform.googleapis.com API is enabled in this project)",
         choices=choices,
         case_sensitive=False,
         default="y",
@@ -1581,8 +1597,8 @@ def _handle_interactive_credentials(context: str | None = None) -> dict:
             console.print(f"> ⚠️  {e}", style="yellow")
             console.print("> Continuing with template processing...")
 
-    # Verify credentials and Vertex AI (with interactive API enablement prompt)
-    console.print("> Testing Vertex AI connection...")
+    # Verify credentials and the aiplatform.googleapis.com API (with interactive API enablement prompt)
+    console.print("> Testing Gemini platform connection...")
     creds_info = verify_credentials_and_vertex(context=context, interactive=True)
     console.print(f"> ✓ Connected to project: {creds_info['project']}")
 
@@ -1698,6 +1714,7 @@ def _render_project(
             google_cloud_project=plan.google_cloud_project,
             bq_analytics=selection.bq_analytics,
             agent_gateway=bool(inputs.agent_gateway),
+            agent_runtime_identity_default=plan.agent_runtime_identity_default,
             agent_guidance_filename=inputs.agent_guidance_filename,
             root_agent_name=inputs.root_agent_name or recorded_root_agent_name,
         )
@@ -1832,7 +1849,31 @@ def _print_next_steps(location: ProjectLocation, plan: RenderPlan) -> None:
             "   Once ready for production, run: [cyan]agents-cli scaffold enhance[/]"
         )
 
+    if _env_has_placeholder_project(location.project_path / ".env"):
+        console.print(
+            "\n[bold yellow]⚠️  Set your GCP project[/]\n"
+            "   No GCP project was detected, so .env still has "
+            f"GOOGLE_CLOUD_PROJECT={template.GCP_PROJECT_PLACEHOLDER}.\n"
+            f"   Edit [cyan]{cd_path}/.env[/] and set it to your project ID "
+            "before running the agent."
+        )
+
     console.print("\n[bold cyan]🚀 Get Started[/]")
     console.print(
         f"   [bold bright_green]cd {cd_path} && agents-cli install && agents-cli playground[/]"
+    )
+
+
+def _env_has_placeholder_project(env_path: pathlib.Path) -> bool:
+    """Whether the generated .env still carries the placeholder project ID."""
+    # Not every language ships a .env (TypeScript and Java only get .env.example).
+    if not env_path.is_file():
+        return False
+    # Tolerate an `export` prefix, spaces around `=` and a quoted value.
+    placeholder = re.escape(template.GCP_PROJECT_PLACEHOLDER)
+    pattern = (
+        rf"""^\s*(?:export\s+)?GOOGLE_CLOUD_PROJECT\s*=\s*(["']?){placeholder}\1\s*$"""
+    )
+    return (
+        re.search(pattern, env_path.read_text(encoding="utf-8"), re.MULTILINE) is not None
     )

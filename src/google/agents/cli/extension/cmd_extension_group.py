@@ -30,7 +30,7 @@ def extension_group():
     Subcommands:
       add     Add an extension from a git reference or local path
       list    List active extensions and the commands they contribute
-      update  Advance extension pins to the latest tracked ref
+      update  Advance extension pins and replace their skills
       remove  Remove an installed extension
     """
 
@@ -48,10 +48,10 @@ extension_group.add_lazy_command(
 extension_group.add_lazy_command(
     "update",
     "google.agents.cli.extension.cmd_extension_update:cmd_update",
-    "Advance extension pins (re-resolve the tracked ref).",
+    "Advance extension pins and replace their skills.",
 )
 extension_group.add_lazy_command(
     "remove",
     "google.agents.cli.extension.cmd_extension_remove:cmd_remove",
-    "Remove an installed extension (checks project then user scope).",
+    "Remove an installed extension (project scope first, then user scope).",
 )

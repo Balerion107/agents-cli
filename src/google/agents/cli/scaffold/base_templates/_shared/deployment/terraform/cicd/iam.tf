@@ -48,6 +48,7 @@ resource "google_project_iam_member" "other_projects_roles" {
   member     = "serviceAccount:${resource.google_service_account.cicd_runner_sa.email}"
   depends_on = [resource.google_project_service.cicd_services, resource.google_project_service.deploy_project_services]
 }
+{%- if not (cookiecutter.deployment_target == 'agent_runtime' and cookiecutter.agent_runtime_identity_default == 'agent_identity') %}
 # 3. Grant application SA the required permissions to run the application
 resource "google_project_iam_member" "app_sa_roles" {
   for_each = {
@@ -63,6 +64,31 @@ resource "google_project_iam_member" "app_sa_roles" {
   member     = "serviceAccount:${google_service_account.app_sa[split(",", each.key)[0]].email}"
   depends_on = [resource.google_project_service.cicd_services, resource.google_project_service.deploy_project_services]
 }
+{%- else %}
+# 3. Grant the Agent Identity principal the permissions required to run the application.
+resource "google_project_iam_member" "agent_identity_roles" {
+  for_each = {
+    for pair in setproduct(keys(local.deploy_project_ids), var.agent_identity_roles) :
+    join(",", pair) => {
+      engine_key = pair[0]
+      project    = local.deploy_project_ids[pair[0]]
+      role       = pair[1]
+    }
+  }
+
+  project = each.value.project
+  role    = each.value.role
+  member  = "principal://${google_vertex_ai_reasoning_engine.app[each.value.engine_key].spec[0].effective_identity}"
+}
+
+resource "google_storage_bucket_iam_member" "agent_identity_logs_bucket" {
+  for_each = local.deploy_project_ids
+
+  bucket = google_storage_bucket.logs_data_bucket[each.value].name
+  role   = "roles/storage.objectAdmin"
+  member = "principal://${google_vertex_ai_reasoning_engine.app[each.key].spec[0].effective_identity}"
+}
+{%- endif %}
 
 {% if cookiecutter.deployment_target == 'cloud_run' %}
 # 4. Allow Cloud Run service SA to pull containers stored in the CICD project.

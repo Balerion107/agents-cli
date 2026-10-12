@@ -41,8 +41,8 @@ const sessionType = "{{cookiecutter.session_type}}"
 // Agent Runtime that backs agent_platform_sessions.
 const defaultAgentRuntimeName = "{{cookiecutter.project_name}}"
 
-// defaultAgentRuntimeLocation is the region Agent Engine sessions default to
-// for non-Agent Runtime deployments.
+// defaultAgentRuntimeLocation is the region Agent Runtime sessions default to
+// when the agent itself is deployed elsewhere.
 const defaultAgentRuntimeLocation = "us-central1"
 
 // dbConnectTimeout bounds how long cloudSQLSessionService waits for the database
@@ -122,7 +122,7 @@ func openCloudSQL(dsn string) (session.Service, error) {
 	return svc, nil
 }
 
-// agentPlatformSessions backs sessions with a managed Vertex AI Agent Runtime,
+// agentPlatformSessions backs sessions with a managed Agent Runtime,
 // finding or creating one by display name.
 func agentPlatformSessions(ctx context.Context) (session.Service, error) {
 	forceInMemory := os.Getenv("USE_IN_MEMORY_SESSION")
@@ -143,7 +143,7 @@ func agentPlatformSessions(ctx context.Context) (session.Service, error) {
 	return vertexService(ctx, engineName)
 }
 
-// vertexService builds a Vertex AI session service against an existing Agent Runtime.
+// vertexService builds an ADK vertexai session service against an existing Agent Runtime.
 func vertexService(ctx context.Context, engineName string) (session.Service, error) {
 	parts := strings.Split(engineName, "/")
 	project := parts[1]
@@ -160,7 +160,7 @@ func vertexService(ctx context.Context, engineName string) (session.Service, err
 		option.WithEndpoint(aiplatformEndpoint(location)),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("create Vertex AI session service: %w", err)
+		return nil, fmt.Errorf("create Agent Runtime session service: %w", err)
 	}
 	return svc, nil
 }
@@ -174,14 +174,14 @@ func findOrCreateAgentRuntime(ctx context.Context, project, location, displayNam
 		Location: location,
 	})
 	if err != nil {
-		return "", fmt.Errorf("create agent platform client: %w", err)
+		return "", fmt.Errorf("create Gemini platform client: %w", err)
 	}
 
 	resp, err := client.AgentEngines.List(ctx, &types.ListAgentEngineConfig{
 		Filter: fmt.Sprintf("display_name=%q", displayName),
 	})
 	if err != nil {
-		return "", fmt.Errorf("list agent runtimes: %w", err)
+		return "", fmt.Errorf("list Agent Runtimes: %w", err)
 	}
 	if len(resp.ReasoningEngines) > 0 {
 		return resp.ReasoningEngines[0].Name, nil
@@ -191,7 +191,7 @@ func findOrCreateAgentRuntime(ctx context.Context, project, location, displayNam
 		DisplayName: displayName,
 	})
 	if err != nil {
-		return "", fmt.Errorf("create agent runtime: %w", err)
+		return "", fmt.Errorf("create Agent Runtime: %w", err)
 	}
 	for !op.Done {
 		select {
@@ -200,18 +200,18 @@ func findOrCreateAgentRuntime(ctx context.Context, project, location, displayNam
 		case <-time.After(2 * time.Second):
 		}
 		if op, err = client.AgentEngines.GetAgentOperation(ctx, op.Name, nil); err != nil {
-			return "", fmt.Errorf("await agent runtime creation: %w", err)
+			return "", fmt.Errorf("await Agent Runtime creation: %w", err)
 		}
 	}
 	if op.Response == nil {
-		return "", fmt.Errorf("agent runtime creation returned no engine")
+		return "", fmt.Errorf("no engine returned from Agent Runtime creation")
 	}
 	return op.Response.Name, nil
 }
 
-// agentRuntimeLocation resolves the region for Agent Engine operations.
+// agentRuntimeLocation resolves the region for Agent Runtime operations.
 //
-// Agent Engine is a regional resource and it doesn't support global location.
+// Agent Runtime is a regional resource and it doesn't support global location.
 func agentRuntimeLocation() string {
 	if loc := os.Getenv("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION"); loc != "" {
 		return loc

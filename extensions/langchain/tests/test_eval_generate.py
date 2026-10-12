@@ -131,7 +131,7 @@ class TestGenerate:
 
 
 class TestGradeContract:
-    """`eval grade` (Vertex) rejects a trace missing these fields."""
+    """`eval grade` (the Eval Service) rejects a trace missing these fields."""
 
     def test_turns_get_index_and_id(self):
         mod = _load()

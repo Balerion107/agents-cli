@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Deploy agents to Agent Runtime.
+"""Deploy agents to Agent Runtime in Gemini platform.
 
 De-templatized deploy module. All cookiecutter conditionals replaced
 with runtime checks via ProjectConfig.
@@ -26,8 +26,9 @@ import os
 import re
 import urllib.parse
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import agentplatform
@@ -39,16 +40,17 @@ from google.genai.errors import APIError
 from google.genai.types import EncryptionSpec
 from google.iam.v1 import iam_policy_pb2, policy_pb2
 
+from google.agents.cli import _sdk_compat
 from google.agents.cli._agent_platform import AgentPlatformClient
 from google.agents.cli._agent_platform_types import types
 from google.agents.cli._project import (
+    AGENT_IDENTITY,
     DEFAULT_FRAMEWORK,
     ProjectConfig,
     find_project_root,
     scaffold_older_than,
 )
 from google.agents.cli._remote import build_agent_runtime_passthrough_url
-from google.agents.cli.deploy import _agent_engines
 from google.agents.cli.deploy._operation import (
     METADATA_FILE,
     METADATA_LOCK_FILE,
@@ -68,6 +70,7 @@ from google.agents.cli.deploy._utils import (
     DEFAULT_MEMORY,
     DEFAULT_MIN_INSTANCES,
     MachineShape,
+    apply_key_value_changes,
     parse_kv_flag,
     parse_secrets,
     print_table,
@@ -210,6 +213,9 @@ def print_agent_runtime_dry_run(
     agent_gateway_egress: str | None,
     agent_gateway_ingress: str | None,
     kms_key: str | None,
+    update_labels: Mapping[str, str],
+    remove_labels: Sequence[str],
+    clear_labels: bool,
 ) -> None:
     """Print what an Agent Runtime deploy would create or update."""
     # Fill defaults FOR DISPLAY ONLY — the real call passes raw (possibly-None)
@@ -222,7 +228,7 @@ def print_agent_runtime_dry_run(
         "max_instances": shown.max_instances,
         "container_concurrency": shown.concurrency,
     }
-    msg = f"  Would deploy to Agent Runtime: project={project}, region={region}"
+    msg = f"  Would deploy to Agent Runtime in Gemini platform: project={project}, region={region}"
     for key, value in runtime_shape.items():
         msg += f"\n  {key}: {value}"
     msg += "\n  (defaults apply on create; existing values preserved on update)"
@@ -251,6 +257,14 @@ def print_agent_runtime_dry_run(
             msg += f"\n  Agent Gateway {label}: {gateway}"
         elif gateway is not None:
             msg += f"\n  Agent Gateway {label}: (cleared)"
+    # Clear/remove only act on an existing engine's labels.
+    if clear_labels:
+        msg += "\n  Labels: all cleared (no effect on create)"
+    if update_labels:
+        pairs = ", ".join(f"{k}={v}" for k, v in update_labels.items())
+        msg += f"\n  Labels to add/update: {pairs}"
+    if remove_labels:
+        msg += f"\n  Labels to remove: {', '.join(remove_labels)} (no effect on create)"
     click.echo(msg)
 
 
@@ -262,9 +276,11 @@ def deploy_agent_runtime(
     location: str = "us-east1",
     description: str | None = None,
     source_packages: list[str] | None = None,
-    set_env_vars: str | None = None,
+    env_vars: str | None = None,
     set_secrets: str | None = None,
-    labels: dict[str, str] | None = None,
+    update_labels: Mapping[str, str] = MappingProxyType({}),
+    remove_labels: Sequence[str] = (),
+    clear_labels: bool = False,
     service_account: str | None = None,
     min_instances: int | None = None,
     max_instances: int | None = None,
@@ -281,28 +297,34 @@ def deploy_agent_runtime(
     port: int | None = None,
     framework: str = DEFAULT_FRAMEWORK,
     kms_key: str | None = None,
-) -> types.AgentEngine | None:
-    """Deploy the agent to Vertex AI Agent Runtime.
+) -> types.Runtime | None:
+    """Deploy the agent to Agent Runtime in Gemini platform.
 
     Args:
         cfg: Project configuration from pyproject.toml.
         project: GCP project ID. Defaults to ADC project.
-        display_name: Display name for the agent engine.
+        display_name: Display name for the Agent Runtime agent.
         location: GCP region.
         description: Description of the agent.
         source_packages: Source packages to deploy.
-        set_env_vars: Comma-separated KEY=VALUE env vars.
+        env_vars: Comma-separated KEY=VALUE env vars.
         set_secrets: Comma-separated ENV_VAR=SECRET_ID pairs.
-        labels: Dict of {key: value} label pairs.
+        update_labels: {key: value} label pairs to add or update.
+        remove_labels: Label keys to remove from the live label set. Keys that
+            don't exist are ignored.
+        clear_labels: If True, remove all labels before applying
+            ``update_labels``. Not combined with ``remove_labels``.
         service_account: Service account email.
         min_instances: Minimum number of instances.
         max_instances: Maximum number of instances.
         cpu: CPU limit.
         memory: Memory limit.
         container_concurrency: Container concurrency.
-        agent_identity: Enable or disable Agent Identity. When new agent is
-          created, None defaults to non-Agent Identity identity. When an
-          existing agent is updated, None leaves the current identity unchanged.
+        agent_identity: Enable or disable Agent Identity. When a new agent is
+          created, None falls back to the project's
+          agent_runtime_identity_default.
+          When an existing agent is updated, None leaves the current identity
+          unchanged.
         no_wait: If True, start the deployment and return immediately.
         update_only: If True, fail instead of creating an engine that does not
             already exist.
@@ -323,7 +345,7 @@ def deploy_agent_runtime(
             key on update fails.
 
     Returns:
-        The deployed AgentEngine instance, or None when no_wait is True.
+        The deployed Runtime instance, or None when no_wait is True.
     """
     validate_deployment_region(location, "Agent Runtime")
 
@@ -339,7 +361,7 @@ def deploy_agent_runtime(
     if not os.path.exists("Dockerfile"):
         raise click.ClickException(_missing_dockerfile_error(cfg))
     # A present-but-ignored Dockerfile passes the check above yet breaks the
-    # build, so surface it clearly instead of failing opaquely in Agent Engine.
+    # build, so surface it clearly instead of failing opaquely in Agent Runtime.
     if auto_packaged and "./Dockerfile" not in source_packages:
         raise click.ClickException(
             "Dockerfile is present but excluded by .gcloudignore/.gitignore.\n"
@@ -356,20 +378,8 @@ def deploy_agent_runtime(
         ingress_gateway_name=agent_gateway_ingress,
     )
 
-    if agent_identity:
-        if service_account:
-            # The API rejects setting both at the same time.
-            logging.warning(
-                "--agent-identity overrides --service-account: the agent runs as "
-                "its own principal, so the service account '%s' is ignored and "
-                "cleared from the agent. Drop --service-account to silence this "
-                "warning.",
-                service_account,
-            )
-        service_account = ""
-
-    env_vars = _build_runtime_env_vars(
-        set_env_vars=set_env_vars,
+    runtime_env_vars = _build_runtime_env_vars(
+        env_vars=env_vars,
         secrets=secrets,
         port=port,
         language=cfg.language,
@@ -384,11 +394,11 @@ def deploy_agent_runtime(
     if build_args_dict:
         image_spec_dict["build_args"] = build_args_dict
 
-    # Initialize agentplatform client
+    # Initialize agentplatform client, v1beta1 for the identity_type field.
     client = AgentPlatformClient(
         project=project,
         location=location,
-        api_version="v1beta1" if (agent_identity is not None) else None,
+        api_version="v1beta1",
     )
     agentplatform.init(project=project, location=location)
 
@@ -407,12 +417,27 @@ def deploy_agent_runtime(
         # first-time spec deploy so the conservative defaults must apply.
         is_update = bool(matching_agents)
 
+        if not is_update and agent_identity is None:
+            agent_identity = cfg.agent_runtime_identity_default == AGENT_IDENTITY
+
+        if agent_identity:
+            if service_account:
+                # The API rejects setting both at the same time.
+                logging.warning(
+                    "Agent Identity overrides --service-account: the agent runs as "
+                    "its own principal, so the service account '%s' is ignored and "
+                    "cleared from the agent. Drop --service-account, or pass "
+                    "--no-agent-identity, to silence this warning.",
+                    service_account,
+                )
+            service_account = ""
+
         # An engine whose configuration is owned elsewhere (Terraform, a platform
         # template) is unusable when this deploy creates it instead: it comes up
         # without the env vars its owner would have set. Refuse rather than create.
         if update_only and not is_update:
             raise click.ClickException(
-                f"No Agent Runtime engine named '{display_name}' exists in "
+                f"No Agent Runtime deployment named '{display_name}' exists in "
                 f"{project}/{location}, and --update-only forbids creating one.\n"
                 "  Create it first (for example with `agents-cli infra single-project "
                 "--apply`), or drop --update-only to let this deploy create it."
@@ -441,13 +466,16 @@ def deploy_agent_runtime(
         # Shown on redeploys that omit --key.
         existing_kms_key: str | None = None
 
+        # None leaves labels out of the update mask, so the live ones are preserved.
+        labels = dict(update_labels) or None
+
         if matching_agents:
             matching_api_resource = matching_agents[0].api_resource
             assert matching_api_resource is not None, "listed agent has no api_resource"
             resource_name = matching_api_resource.name
             # list() may return a summary without deployment_spec; get() guarantees
             # the full env/resource_limits are populated.
-            existing = client.agent_engines.get(name=resource_name)
+            existing = client.runtimes.get(name=resource_name)
             existing_spec = existing.api_resource.spec
             existing_kms_key = _existing_kms_key(existing)
             if kms_key:
@@ -465,15 +493,16 @@ def deploy_agent_runtime(
             )
             # Preserve env vars set outside this deploy; CLI/user values still win.
             for key, value in _existing_plain_env_vars(existing).items():
-                env_vars.setdefault(key, value)
-            # A bare `labels` mask replaces the whole map, so merge with the live
-            # labels to stay additive; user-supplied values win on key conflict.
-            if labels is not None:
-                labels = {**_existing_labels(existing), **labels}
-            # Point the A2A agent card at the real Agent Engine HTTP passthrough
+                runtime_env_vars.setdefault(key, value)
+            # The labels mask path replaces the whole map, so send it in full.
+            if update_labels or remove_labels or clear_labels:
+                labels = apply_key_value_changes(
+                    _existing_labels(existing), update_labels, remove_labels, clear_labels
+                )
+            # Point the A2A agent card at the real Agent Runtime HTTP passthrough
             # instead of localhost; needs the existing engine's resource name, so a
             # first-time create picks it up on the next deploy.
-            env_vars.setdefault(
+            runtime_env_vars.setdefault(
                 "APP_URL",
                 f"https://{location}-aiplatform.googleapis.com/reasoningEngines/v1/"
                 f"{resource_name}/api",
@@ -500,18 +529,18 @@ def deploy_agent_runtime(
         config_kwargs: dict[str, Any] = {
             "display_name": display_name,
             "source_packages": source_packages_list,
-            "env_vars": env_vars,
+            "env_vars": runtime_env_vars,
             "service_account": service_account,
-            "identity_type": _resolve_identity_type(agent_identity, is_update),
+            "identity_type": _resolve_identity_type(agent_identity),
             "description": description,
-            "labels": labels if labels else None,
+            "labels": labels,
             "min_instances": min_instances,
             "max_instances": max_instances,
             "container_concurrency": container_concurrency,
             "resource_limits": {"cpu": cpu, "memory": memory}
             if (cpu is not None and memory is not None)
             else None,
-            # Agent Engine builds and serves the container over HTTP, so no entrypoint
+            # Agent Runtime builds and serves the container over HTTP, so no entrypoint
             # module or class-method spec is needed — just the image build config.
             "image_spec": image_spec_dict,
             # The Console uses agent_framework to decide which playground to render.
@@ -539,7 +568,7 @@ def deploy_agent_runtime(
         if kms_key and action_mode == "create":
             config_kwargs["encryption_spec"] = EncryptionSpec(kms_key_name=kms_key)
 
-        config = types.AgentEngineConfig(**config_kwargs)
+        config = types.AgentRuntimeConfig(**config_kwargs)
         api_config = _create_api_config(
             client=client,
             config=config,
@@ -548,7 +577,7 @@ def deploy_agent_runtime(
             agent_gateway_ingress=agent_gateway_ingress,
         )
 
-        click.echo("\n🤖 Deploying agent to Agent Runtime...\n")
+        click.echo("\n🤖 Deploying agent to Agent Runtime in Gemini platform...\n")
 
         # Log deployment parameters
         click.echo("\n📋 Deployment Parameters:")
@@ -602,9 +631,9 @@ def deploy_agent_runtime(
         for name, value in params:
             click.echo(f"  {name}: {value}")
 
-        if env_vars:
+        if runtime_env_vars:
             click.echo("\n🌍 Environment Variables:")
-            for key, value in sorted(env_vars.items()):
+            for key, value in sorted(runtime_env_vars.items()):
                 click.echo(f"  {key}: {format_env_value(value)}")
 
         # Setup agent identity on first deployment (remote identity creation pre-step)
@@ -620,9 +649,9 @@ def deploy_agent_runtime(
                 f"https://{location}-aiplatform.googleapis.com/reasoningEngines/v1/"
                 f"{resource_name}/api"
             )
-            env_vars["APP_URL"] = app_url
-            config_kwargs["env_vars"] = env_vars
-            config = types.AgentEngineConfig(**config_kwargs)
+            runtime_env_vars["APP_URL"] = app_url
+            config_kwargs["env_vars"] = runtime_env_vars
+            config = types.AgentRuntimeConfig(**config_kwargs)
             api_config = _create_api_config(
                 client=client,
                 config=config,
@@ -661,7 +690,7 @@ def deploy_agent_runtime(
             "   If this command is interrupted, run 'agents-cli deploy --status' to check progress."
         )
 
-        completed_op = _agent_engines.wait_for_operation(
+        completed_op = _sdk_compat.wait_for_operation(
             client, operation_name=operation_name
         )
         if completed_op.error:
@@ -669,10 +698,10 @@ def deploy_agent_runtime(
             clear_operation(owner_id=claim.owner_id)
             raise click.ClickException(f"Deployment failed: {completed_op.error}")
 
-        # Retrieve the newly created/updated agent engine using the public client.agent_engines.get()
+        # Retrieve the newly created/updated Agent Runtime agent using the public client.runtimes.get()
         # to ensure all fields (including the api_resource name) are fully loaded and populated.
         resource_name = _get_resource_name_from_operation(operation_name)
-        remote_agent = client.agent_engines.get(name=resource_name)
+        remote_agent = client.runtimes.get(name=resource_name)
 
         if migrates_to_agent_identity:
             grant_agent_identity_roles(project, remote_agent)
@@ -684,7 +713,7 @@ def deploy_agent_runtime(
             and matching_agents
             and remote_agent.api_resource
         ):
-            clear_op_name = _agent_engines.start_update(
+            clear_op_name = _sdk_compat.start_update(
                 client,
                 name=remote_agent.api_resource.name,
                 config={
@@ -692,7 +721,7 @@ def deploy_agent_runtime(
                     "update_mask": "spec.deployment_spec.secret_env",
                 },
             )
-            _agent_engines.wait_for_operation(client, operation_name=clear_op_name)
+            _sdk_compat.wait_for_operation(client, operation_name=clear_op_name)
 
         write_deployment_metadata(remote_agent, cfg, owner_id=claim.owner_id)
         claim.completed = True
@@ -738,17 +767,17 @@ def check_agent_runtime_operation(
     owner_id = op_data.get("owner_id")
 
     client = AgentPlatformClient(project=project, location=location)
-    operation = _agent_engines.get_operation(client, operation_name=operation_name)
+    operation = _sdk_compat.get_operation(client, operation_name=operation_name)
 
     if operation.done:
         if operation.error:
             clear_operation(owner_id=owner_id)
             raise click.ClickException(f"Deployment failed: {operation.error}")
 
-        # Retrieve the newly created/updated agent engine using the public client.agent_engines.get()
+        # Retrieve the newly created/updated Agent Runtime agent using the public client.runtimes.get()
         # to ensure all fields (including the api_resource name) are fully loaded and populated.
         resource_name = _get_resource_name_from_operation(operation_name)
-        remote_agent = client.agent_engines.get(name=resource_name)
+        remote_agent = client.runtimes.get(name=resource_name)
 
         write_deployment_metadata(remote_agent, cfg, owner_id=owner_id)
         print_deployment_success(remote_agent, location, project, cfg)
@@ -771,9 +800,9 @@ def check_agent_runtime_operation(
 
 
 def list_agent_runtime_deployments(project: str, location: str) -> None:
-    """List Agent Runtime deployments via the Agent Platform SDK."""
+    """List Agent Runtime deployments via the Gemini platform SDK."""
     client = AgentPlatformClient(project=project, location=location)
-    agents = list(client.agent_engines.list())
+    agents = list(client.runtimes.list())
 
     if not agents:
         click.echo(f"No Agent Runtime deployments found in {project} ({location}).")
@@ -781,7 +810,9 @@ def list_agent_runtime_deployments(project: str, location: str) -> None:
 
     from rich.table import Table
 
-    table = Table(title=f"Agent Runtime Deployments — {project} ({location})")
+    table = Table(
+        title=f"Agent Runtime deployments in Gemini platform — {project} ({location})"
+    )
     table.add_column("Display Name", style="bold")
     table.add_column("Resource Name", style="dim")
     table.add_column("Create Time")
@@ -953,17 +984,17 @@ def _validate_gateway_name(gateway: str, *, name: str) -> str:
 
 def _build_runtime_env_vars(
     *,
-    set_env_vars: str | None,
+    env_vars: str | None,
     secrets: dict[str, dict[str, str]],
     port: int | None = None,
     language: str | None = None,
 ) -> dict[str, Any]:
     """Assemble the runtime env vars for the deployed Agent Runtime.
 
-    Precedence (highest first): ``--update-env-vars`` / ``--set-secrets``, then the
+    Precedence (highest first): ``--env-vars`` / ``--secrets``, then the
     project ``.env``, then these overridable defaults. ``GOOGLE_CLOUD_PROJECT`` is
     dropped — Agent Runtime reserves it (the platform injects it) and rejects it.
-    The backend defaults to Vertex AI (at ``GOOGLE_CLOUD_LOCATION=global``) unless
+    The backend defaults to Gemini platform (at ``GOOGLE_CLOUD_LOCATION=global``) unless
     the ``.env`` supplies an AI Studio API key:
 
     - ``AGENT_VERSION`` — the project version (parsed from correct manifest file
@@ -975,58 +1006,65 @@ def _build_runtime_env_vars(
       default: Go uses ``false`` (opt-in; set ``true`` for the completions view),
       Python keeps ``NO_CONTENT`` (content goes to GCS via the completion hook).
     """
-    # Project .env is the base layer; explicit --update-env-vars wins over it.
-    env_vars: dict[str, Any] = read_project_dotenv(find_project_root() or Path.cwd())
-    env_vars.update(parse_kv_flag("--set-env-vars", set_env_vars))
-    env_vars.update(secrets)  # type: ignore[arg-type]
+    # Project .env is the base layer; explicit --env-vars wins over it.
+    runtime_env_vars: dict[str, Any] = read_project_dotenv(
+        find_project_root() or Path.cwd()
+    )
+    runtime_env_vars.update(parse_kv_flag("--env-vars", env_vars))
+    runtime_env_vars.update(secrets)  # type: ignore[arg-type]
     # Agent Runtime injects these itself; including them in deployment_spec.env is
     # rejected with FAILED_PRECONDITION ("... is reserved").
-    for reserved in _AGENT_RUNTIME_RESERVED_ENV & env_vars.keys():
+    for reserved in _AGENT_RUNTIME_RESERVED_ENV & runtime_env_vars.keys():
         logging.warning(
             "Ignoring reserved Agent Runtime env var %s — it is set by the platform.",
             reserved,
         )
-        del env_vars[reserved]
+        del runtime_env_vars[reserved]
     # Skip the version read (and its warning) when the user has already supplied one.
-    if "AGENT_VERSION" not in env_vars:
-        env_vars["AGENT_VERSION"] = get_project_version(find_project_root() or Path.cwd())
+    if "AGENT_VERSION" not in runtime_env_vars:
+        runtime_env_vars["AGENT_VERSION"] = get_project_version(
+            find_project_root() or Path.cwd()
+        )
     if port:
-        env_vars.setdefault("PORT", str(port))
-    # agent_runtime is Vertex-native: default to Vertex (LLM at global) unless the
+        runtime_env_vars.setdefault("PORT", str(port))
+    # agent_runtime runs on Gemini platform: default to it (LLM at global) unless the
     # .env opted into AI Studio with an API key.
-    if "GEMINI_API_KEY" not in env_vars and "GOOGLE_API_KEY" not in env_vars:
+    if (
+        "GEMINI_API_KEY" not in runtime_env_vars
+        and "GOOGLE_API_KEY" not in runtime_env_vars
+    ):
         # Respect either name from the user's .env: GOOGLE_GENAI_USE_ENTERPRISE wins
         # over GOOGLE_GENAI_USE_VERTEXAI, so adding it would override an explicit
         # GOOGLE_GENAI_USE_VERTEXAI=false.
         if (
-            "GOOGLE_GENAI_USE_ENTERPRISE" not in env_vars
-            and "GOOGLE_GENAI_USE_VERTEXAI" not in env_vars
+            "GOOGLE_GENAI_USE_ENTERPRISE" not in runtime_env_vars
+            and "GOOGLE_GENAI_USE_VERTEXAI" not in runtime_env_vars
         ):
-            env_vars["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
+            runtime_env_vars["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
             # Python also gets the new name. The legacy one stays for projects
             # locked to google-adk < 2.3.0 / google-genai < 1.74.0, which deploy with
             # the latest CLI from CI (no .env there) and ignore the new name.
             if language == "python":
-                env_vars["GOOGLE_GENAI_USE_ENTERPRISE"] = "true"
-        env_vars.setdefault("GOOGLE_CLOUD_LOCATION", "global")
-    env_vars.setdefault("GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY", "true")
+                runtime_env_vars["GOOGLE_GENAI_USE_ENTERPRISE"] = "true"
+        runtime_env_vars.setdefault("GOOGLE_CLOUD_LOCATION", "global")
+    runtime_env_vars.setdefault("GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY", "true")
     # Prompt/response content capture, off by default (opt-in). Go: set "true" to
     # log content to OTLP log events for the completions view (parsed as a boolean).
     # Python: content goes to GCS via the completion hook, so NO_CONTENT.
-    env_vars.setdefault(
+    runtime_env_vars.setdefault(
         "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
         "false" if language == "go" else "NO_CONTENT",
     )
     # Fail closed: ADK defaults content-in-spans to true; keep it off for bare deploys.
-    env_vars.setdefault("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false")
-    return env_vars
+    runtime_env_vars.setdefault("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false")
+    return runtime_env_vars
 
 
 def _resolve_target_agent(
     client: AgentPlatformClient,
     display_name: str,
 ) -> list[Any]:
-    """Resolve the target agent engine by ID or display name.
+    """Resolve the target Agent Runtime agent by ID or display name.
 
     Target resolution:
     1. Prefer the ID recorded in metadata.
@@ -1039,7 +1077,7 @@ def _resolve_target_agent(
     if target_id:
         try:
             # get() guarantees full env/resource_limits are populated
-            existing = client.agent_engines.get(name=target_id)
+            existing = client.runtimes.get(name=target_id)
             # If the engine was found but its display name was changed out of band, warn or fail?
             # Issue requests: "Before mutation, validate its project number, location, deployment target, resource name, and actual display name. Reject stale or inconsistent metadata."
             if existing.api_resource.display_name != display_name:
@@ -1062,7 +1100,7 @@ def _resolve_target_agent(
             ) from e
     else:
         # Fall back to display_name scan
-        existing_agents = list(client.agent_engines.list())
+        existing_agents = list(client.runtimes.list())
         matching_agents = [
             agent
             for agent in existing_agents
@@ -1070,7 +1108,7 @@ def _resolve_target_agent(
         ]
         if len(matching_agents) > 1:
             raise click.ClickException(
-                f"Found {len(matching_agents)} Agent Runtime engines named '{display_name}'.\n"
+                f"Found {len(matching_agents)} Agent Runtime deployments named '{display_name}'.\n"
                 "  A display-name update is ambiguous. Delete the duplicates or "
                 f"ensure the correct resource ID is recorded in {METADATA_FILE}."
             )
@@ -1078,7 +1116,7 @@ def _resolve_target_agent(
     return matching_agents
 
 
-def _existing_kms_key(agent: types.AgentEngine) -> str | None:
+def _existing_kms_key(agent: types.Runtime) -> str | None:
     """The customer-managed encryption key on a deployed Agent Runtime, if any."""
     api_resource = agent.api_resource
     encryption_spec = api_resource.encryption_spec if api_resource else None
@@ -1117,7 +1155,7 @@ def _is_agent_identity_principal(effective_identity: str | None) -> bool:
     )
 
 
-def _existing_plain_env_vars(agent: types.AgentEngine) -> dict[str, str]:
+def _existing_plain_env_vars(agent: types.Runtime) -> dict[str, str]:
     """Plain env vars on a deployed Agent Runtime, as ``{name: value}``.
 
     An update replaces the whole ``deployment_spec.env`` block, so re-sending
@@ -1135,32 +1173,25 @@ def _existing_plain_env_vars(agent: types.AgentEngine) -> dict[str, str]:
     return result
 
 
-def _existing_labels(agent: types.AgentEngine) -> dict[str, str]:
+def _existing_labels(agent: types.Runtime) -> dict[str, str]:
     """Already existing Agent Runtime labels."""
     if not agent.api_resource:
         return {}
     return agent.api_resource.labels or {}
 
 
-def _resolve_identity_type(
-    agent_identity: bool | None, is_updating: bool
-) -> types.IdentityType | None:
-    if agent_identity is True:
+def _resolve_identity_type(agent_identity: bool | None) -> types.IdentityType | None:
+    if agent_identity is None:
+        return None
+    if agent_identity:
         return types.IdentityType.AGENT_IDENTITY
-    elif agent_identity is False:
-        return types.IdentityType.SERVICE_ACCOUNT
-    else:
-        # On update, None means "no change", on create it's "do not use Agent Identity"
-        if is_updating:
-            return None
-        else:
-            return types.IdentityType.SERVICE_ACCOUNT
+    return types.IdentityType.SERVICE_ACCOUNT
 
 
 def _adk_python_class_methods() -> list[dict[str, str]]:
     """Runtime contract exposed by the ADK Python Agent.
 
-    Required to query the agent using Vertex SDK after deployment.
+    Required to query the agent using the Gemini platform SDK after deployment.
     """
     from vertexai.agent_engines.templates.adk import AdkApp
 
@@ -1177,7 +1208,7 @@ def _adk_python_class_methods() -> list[dict[str, str]]:
 def _adk_go_class_methods() -> list[dict[str, str]]:
     """Runtime contract exposed by the ADK Go Agent.
 
-    Mirrors the operations that adk-go registers in its Agent Engine handler
+    Mirrors the operations that adk-go registers in its `agentengine` handler
     (https://github.com/google/adk-go/blob/main/server/agentengine/handler.go#L108).
     Keep in sync with the Go handler.
     """
@@ -1191,8 +1222,8 @@ def _adk_go_class_methods() -> list[dict[str, str]]:
     ]
 
 
-# Agent Runtime records a ``class_methods`` contract that clients (the Vertex /
-# Agent Platform SDK) read to reconstruct the callable methods on an Agent Engine.
+# Agent Runtime records a ``class_methods`` contract that clients (the Gemini
+# platform SDK) read to reconstruct the callable methods on an Agent Runtime.
 CLASS_METHODS_BUILDERS: dict[str, Callable[[], list[dict[str, str]]] | None] = {
     "python": _adk_python_class_methods,
     "go": _adk_go_class_methods,
@@ -1203,14 +1234,14 @@ CLASS_METHODS_BUILDERS: dict[str, Callable[[], list[dict[str, str]]] | None] = {
 
 def _create_api_config(
     *,
-    client: Any,
-    config: types.AgentEngineConfig,
+    client: AgentPlatformClient,
+    config: types.AgentRuntimeConfig,
     action: str,
     agent_gateway_egress: str | None,
     agent_gateway_ingress: str | None,
-) -> dict[str, Any]:
+) -> types.UpdateRuntimeConfigDict:
     """Create a config for create/update operations with a patched update mask."""
-    api_config = _agent_engines.build_config(
+    api_config = _sdk_compat.build_config(
         client,
         mode=action,
         display_name=config.display_name,
@@ -1237,10 +1268,9 @@ def _create_api_config(
 
     # build_config can only generate a config that updates both gateways at once,
     # we need to patch the update mask with more granular paths.
-    if api_config.get("update_mask"):
-        paths = [
-            p for p in api_config["update_mask"].split(",") if p != _AG_UPDATE_MASK_PATH
-        ]
+    update_mask = api_config.get("update_mask")
+    if update_mask:
+        paths = [p for p in update_mask.split(",") if p != _AG_UPDATE_MASK_PATH]
         if agent_gateway_egress is not None:
             paths.append(_AG_EGRESS_UPDATE_MASK_PATH)
         if agent_gateway_ingress is not None:
@@ -1259,12 +1289,12 @@ def format_env_value(value: Any) -> str:
 
 def setup_agent_identity(
     client: Any, project: str, display_name: str, kms_key: str | None = None
-) -> types.AgentEngine:
+) -> types.Runtime:
     """Create an agent first, so we know which principal should be granted the IAM roles."""
     click.echo(f"\n🔧 Creating agent identity for: {display_name}")
     encryption_spec = EncryptionSpec(kms_key_name=kms_key) if kms_key else None
     try:
-        agent = client.agent_engines.create(
+        agent = client.runtimes.create(
             config={
                 "identity_type": types.IdentityType.AGENT_IDENTITY,
                 "display_name": display_name,
@@ -1296,7 +1326,7 @@ def _cmek_access_hint(api_message: str) -> str:
     sibling = _cmek_sibling_agent(principal) if match else None
     grantees = f"{principal}\n        {sibling}" if sibling else principal
     return (
-        "\n\n  Agent Platform could not use this CMEK key. Check:\n"
+        "\n\n  Gemini platform could not use this CMEK key. Check:\n"
         "    • if the key is enabled\n"
         "    • roles/cloudkms.cryptoKeyEncrypterDecrypter on the key for:\n"
         f"        {grantees}\n"
@@ -1316,7 +1346,7 @@ def _cmek_sibling_agent(principal: str) -> str | None:
     return None
 
 
-def grant_agent_identity_roles(project: str, agent: types.AgentEngine) -> None:
+def grant_agent_identity_roles(project: str, agent: types.Runtime) -> None:
     """Grant the baseline project roles to an agent's own principal."""
     api_resource = agent.api_resource
     spec = api_resource.spec if api_resource else None
@@ -1348,12 +1378,12 @@ def grant_agent_identity_roles(project: str, agent: types.AgentEngine) -> None:
 
 def _start_and_record_operation(
     *,
-    client: Any,
+    client: AgentPlatformClient,
     matching_agents: list[Any],
     project: str,
     location: str,
-    api_config: dict[str, Any] | None = None,
-    config: types.AgentEngineConfig | None = None,
+    api_config: types.UpdateRuntimeConfigDict | None = None,
+    config: types.AgentRuntimeConfig | None = None,
     agent_gateway_egress: str | None = None,
     agent_gateway_ingress: str | None = None,
     claim: OperationClaim | None = None,
@@ -1377,13 +1407,13 @@ def _start_and_record_operation(
 
     try:
         if matching_agents:
-            operation_name = _agent_engines.start_update(
+            operation_name = _sdk_compat.start_update(
                 client,
                 name=matching_agents[0].api_resource.name,
                 config=api_config,
             )
         else:
-            operation_name = _agent_engines.start_create(client, config=api_config)
+            operation_name = _sdk_compat.start_create(client, config=api_config)
     except APIError as exc:
         encryption_spec = config.encryption_spec if config else None
         kms_key = encryption_spec.kms_key_name if encryption_spec else None
@@ -1427,7 +1457,7 @@ def _get_resource_name_from_operation(operation_name: str) -> str:
 
 
 def write_deployment_metadata(
-    remote_agent: types.AgentEngine,
+    remote_agent: types.Runtime,
     cfg: ProjectConfig,
     owner_id: str | None = None,
 ) -> None:
@@ -1448,7 +1478,7 @@ def write_deployment_metadata(
 
 
 def print_deployment_success(
-    remote_agent: types.AgentEngine,
+    remote_agent: types.Runtime,
     location: str,
     project: str,
     cfg: ProjectConfig,

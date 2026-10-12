@@ -97,6 +97,7 @@ resource "github_actions_variable" "cicd_project_id" {
   value         = var.cicd_runner_project_id
   depends_on    = [github_repository.repo, data.github_repository.existing_repo]
 }
+{%- if not (cookiecutter.deployment_target == 'agent_runtime' and cookiecutter.agent_runtime_identity_default == 'agent_identity') %}
 
 resource "github_actions_variable" "app_sa_email_staging" {
   repository    = var.repository_name
@@ -125,6 +126,7 @@ resource "github_actions_variable" "app_service_account_prod" {
   value         = google_service_account.app_sa["prod"].email
   depends_on    = [github_repository.repo, data.github_repository.existing_repo]
 }
+{%- endif %}
 
 resource "github_actions_variable" "logs_bucket_name_staging" {
   repository    = var.repository_name

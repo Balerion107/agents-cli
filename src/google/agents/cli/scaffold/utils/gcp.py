@@ -94,7 +94,7 @@ def _get_account_from_gcloud() -> str | None:
 def _test_vertex_connection(
     project: str, token: str, context: str | None = None
 ) -> tuple[bool, str | None]:
-    """Test Vertex AI connection using requests.
+    """Test the Gemini platform connection using requests.
 
     Returns:
         Tuple of (success, error_message)
@@ -130,9 +130,9 @@ def _test_vertex_connection(
 
 
 def enable_vertex_ai_api(project_id: str, context: str | None = None) -> bool:
-    """Enable Vertex AI API and wait for propagation."""
+    """Enable the aiplatform.googleapis.com API and wait for propagation."""
     try:
-        console.print("Enabling Vertex AI API...")
+        console.print("Enabling the aiplatform.googleapis.com API...")
         run_gcloud_command(
             [
                 "services",
@@ -144,7 +144,7 @@ def enable_vertex_ai_api(project_id: str, context: str | None = None) -> bool:
             check=True,
             capture_output=True,
         )
-        console.print("✓ Vertex AI API enabled successfully")
+        console.print("✓ aiplatform.googleapis.com API enabled successfully")
 
         # Wait for API propagation
         console.print("⏳ Waiting for API availability to propagate...")
@@ -158,7 +158,7 @@ def enable_vertex_ai_api(project_id: str, context: str | None = None) -> bool:
         while time.time() - start_time < max_wait_time:
             success, _ = _test_vertex_connection(project_id, token, context)
             if success:
-                console.print("✓ Vertex AI API is now available")
+                console.print("✓ aiplatform.googleapis.com API is now available")
                 return True
             time.sleep(check_interval)
             console.print("⏳ Still waiting for API propagation...")
@@ -170,7 +170,10 @@ def enable_vertex_ai_api(project_id: str, context: str | None = None) -> bool:
         return True
 
     except subprocess.CalledProcessError as e:
-        console.print(f"Failed to enable Vertex AI API: {e.stderr}", style="bold red")
+        console.print(
+            f"Failed to enable the aiplatform.googleapis.com API: {e.stderr}",
+            style="bold red",
+        )
         return False
 
 
@@ -178,7 +181,7 @@ def verify_credentials_and_vertex(
     context: str | None = None,
     interactive: bool = False,
 ) -> dict:
-    """Verify credentials and Vertex AI connection.
+    """Verify credentials and the Gemini platform connection.
 
     Uses google.auth + requests for lightweight verification.
 
@@ -199,7 +202,7 @@ def verify_credentials_and_vertex(
         # Get credentials and token
         credentials, project, token = _get_credentials_and_token()
 
-        # Test Vertex AI connection
+        # Test the Gemini platform connection
         success, error = _test_vertex_connection(project, token, context)
 
         # Only fetch account for interactive mode (when we need to display it)
@@ -218,33 +221,34 @@ def verify_credentials_and_vertex(
         if error == "api_not_enabled":
             if not interactive:
                 raise Exception(
-                    f"Vertex AI API is not enabled in project '{project}'. "
+                    f"The aiplatform.googleapis.com API is not enabled in project '{project}'. "
                     f"Enable it with: gcloud services enable aiplatform.googleapis.com --project {project}"
                 )
             else:
                 # Interactive mode - offer to enable
                 console.print(
-                    f"Vertex AI API is not enabled in project '{project}'.",
+                    f"The aiplatform.googleapis.com API is not enabled in project '{project}'.",
                     style="yellow",
                 )
                 if Confirm.ask(
-                    "Do you want to enable the Vertex AI API now?", default=True
+                    "Do you want to enable the aiplatform.googleapis.com API now?",
+                    default=True,
                 ):
                     if enable_vertex_ai_api(project, context):
                         return {"project": project, "account": get_account()}
-                    raise Exception("Failed to enable Vertex AI API")
+                    raise Exception("Failed to enable the aiplatform.googleapis.com API")
                 else:
                     raise Exception(
-                        "Vertex AI API is not enabled and user declined to enable it"
+                        "The aiplatform.googleapis.com API is not enabled and user declined to enable it"
                     )
 
         # Other errors
-        raise Exception(f"Vertex AI connection failed: {error}")
+        raise Exception(f"Gemini platform connection failed: {error}")
 
     except google.auth.exceptions.DefaultCredentialsError as e:
         raise Exception(_AUTH_ERROR_MESSAGE) from e
     except requests.exceptions.RequestException as e:
-        raise Exception(f"Network error connecting to Vertex AI: {e}") from e
+        raise Exception(f"Network error connecting to Gemini platform: {e}") from e
     except Exception as e:
         error_str = str(e).lower()
         if any(

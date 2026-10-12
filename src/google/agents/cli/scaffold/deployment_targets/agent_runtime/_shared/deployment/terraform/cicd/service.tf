@@ -26,8 +26,13 @@ resource "google_vertex_ai_reasoning_engine" "app" {
 
   spec {
     agent_framework = var.agent_framework
+{%- if cookiecutter.agent_runtime_identity_default == "agent_identity" %}
+    service_account = ""
+    identity_type   = "AGENT_IDENTITY"
+{%- else %}
     service_account = google_service_account.app_sa[each.key].email
     identity_type   = "SERVICE_ACCOUNT"
+{%- endif %}
 
     deployment_spec {
       min_instances         = 1
@@ -126,7 +131,7 @@ resource "google_vertex_ai_reasoning_engine" "app" {
   # Terraform creates the resource with a placeholder source build; CI/CD
   # overwrites the same source_code_spec with the real code. The deploy writes
   # source_code_spec, so the placeholder must use it too — a container_spec
-  # placeholder would be left alongside it and Agent Engine rejects the update.
+  # placeholder would be left alongside it and Agent Runtime rejects the update.
   # Ignore the spec and deployment_spec so Terraform never reverts the deployed agent.
   lifecycle {
     ignore_changes = [

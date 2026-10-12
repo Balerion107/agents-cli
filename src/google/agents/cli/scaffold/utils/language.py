@@ -294,7 +294,7 @@ def get_project_version(
         logging.warning(
             "Could not read the project version (%s). Falling back to %s — set "
             "the version in your project, or pass AGENT_VERSION via "
-            "--update-env-vars to override.",
+            "--env-vars to override.",
             e,
             default_version,
         )

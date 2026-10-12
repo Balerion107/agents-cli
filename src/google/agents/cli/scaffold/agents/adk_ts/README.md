@@ -51,7 +51,7 @@ cp .env.example .env
 2. Edit `.env` with your configuration:
 
 ```bash
-# For Vertex AI (recommended):
+# For Gemini platform (recommended):
 GOOGLE_GENAI_USE_VERTEXAI=true
 GOOGLE_CLOUD_PROJECT=your-gcp-project-id
 GOOGLE_CLOUD_LOCATION=global
@@ -88,7 +88,7 @@ For full command options and usage, refer to the [Makefile](Makefile).
 ## Usage
 
 This template follows a "bring your own agent" approach - you focus on your business logic, and the template handles everything else (UI, infrastructure, deployment, monitoring).
-1. **Prototype:** Build your Generative AI Agent using the intro notebooks in `notebooks/` for guidance. Use Vertex AI Evaluation to assess performance.
+1. **Prototype:** Build your Generative AI Agent using the intro notebooks in `notebooks/` for guidance. Use the Eval Service in Gemini platform to assess performance.
 2. **Integrate:** Import your agent into the app by editing `{{cookiecutter.agent_directory}}/agent.ts`. Add tools using `FunctionTool` with Zod schemas for parameter validation.
 3. **Test:** Explore your agent functionality using the local playground with `make playground`. The playground automatically reloads your agent on code changes.
 4. **Deploy:** Set up and initiate the CI/CD pipelines, customizing tests as necessary. Refer to the [deployment section](#deployment) for comprehensive instructions. For streamlined infrastructure deployment, simply run `uvx google-agents-cli infra cicd`. Currently supports GitHub with both Google Cloud Build and GitHub Actions as CI/CD runners.

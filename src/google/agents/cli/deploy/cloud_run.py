@@ -81,9 +81,11 @@ def deploy_cloud_run(
     port: int | None,
     iap: bool,
     service_account: str | None,
-    update_env_vars: str | None,
+    env_vars: str | None,
     secrets: str | None,
-    labels: dict[str, str],
+    update_labels: dict[str, str],
+    remove_labels: list[str],
+    clear_labels: bool,
     no_wait: bool,
     dry_run: bool,
 ) -> None:
@@ -111,12 +113,12 @@ def deploy_cloud_run(
         project=project,
         region=region,
         service_name=service_name,
-        update_env_vars=update_env_vars,
+        env_vars=env_vars,
     )
     args.extend(_cloud_run_env_var_args(env_var_map))
     if secrets:
         args.extend(_cloud_run_secret_args(secrets, env_var_map))
-    args.extend(_cloud_run_label_args(labels))
+    args.extend(_cloud_run_label_args(update_labels, remove_labels, clear_labels))
 
     if no_wait:
         args.append("--async")
@@ -333,12 +335,12 @@ def _cloud_run_env_vars(
     project: str,
     region: str,
     service_name: str,
-    update_env_vars: str | None,
+    env_vars: str | None,
 ) -> dict[str, str]:
-    """Runtime env vars. Precedence: --update-env-vars > .env > defaults."""
+    """Runtime env vars. Precedence: --env-vars > .env > defaults."""
     project_root = find_project_root() or "."
     env_var_map = read_project_dotenv(project_root)
-    env_var_map.update(parse_kv_flag("--update-env-vars", update_env_vars))
+    env_var_map.update(parse_kv_flag("--env-vars", env_vars))
 
     # Skip the version read (and its warning) when the user has already supplied one.
     if "AGENT_VERSION" not in env_var_map:
@@ -385,7 +387,7 @@ def _cloud_run_secret_args(secrets: str, env_var_map: dict[str, str]) -> list[st
         raise click.ClickException(
             f"{', '.join(sorted(overlap))} cannot be set as both a plain "
             "environment variable and a secret. Cloud Run requires each key "
-            "to be one or the other — rename it or drop it from --update-env-vars."
+            "to be one or the other — rename it or drop it from --env-vars."
         )
     secret_str = ",".join(
         f"{env}={spec['secret']}:{spec['version']}"
@@ -394,19 +396,42 @@ def _cloud_run_secret_args(secrets: str, env_var_map: dict[str, str]) -> list[st
     return ["--update-secrets", secret_str]
 
 
-def _cloud_run_label_args(labels: dict[str, str]) -> list[str]:
-    """``--update-labels`` with the user labels plus the reserved ``created-by``."""
-    # Merge user labels with the default ones, seeded LAST so
-    # user-supplied ones can't override it.
-    if labels.get("created-by") not in (None, "agents-cli"):
+def _cloud_run_label_args(
+    update_labels: dict[str, str], remove_labels: list[str], clear_labels: bool
+) -> list[str]:
+    """Label flags for gcloud, always re-applying the reserved ``created-by``.
+
+    ``created-by`` is reserved, so a user can neither override its value via
+    --labels nor drop it via --remove-labels / --clear-labels.
+    """
+    if update_labels.get("created-by") not in (None, "agents-cli"):
         logging.warning(
             "Ignoring --labels created-by=%s: 'created-by' is currently reserved.",
-            labels["created-by"],
+            update_labels["created-by"],
         )
-    cr_labels = {**labels, "created-by": "agents-cli"}
+    cr_remove_labels = list(remove_labels)
+    if "created-by" in cr_remove_labels:
+        cr_remove_labels.remove("created-by")
+        logging.warning(
+            "Ignoring --remove-labels created-by: 'created-by' is currently reserved."
+        )
+
+    # Emit removals before the additive --update-labels. gcloud applies
+    # --clear-labels before --update-labels, so the user's --labels and the
+    # reserved created-by we add below survive a clear. (--remove-labels and
+    # --update-labels touch disjoint keys — a key can't be in both --labels
+    # and --remove-labels — so their relative order doesn't matter.)
+    args = []
+    if clear_labels:
+        args.append("--clear-labels")
+    elif cr_remove_labels:
+        args.extend(["--remove-labels", ",".join(cr_remove_labels)])
+
+    cr_labels = {**update_labels, "created-by": "agents-cli"}
     # --update-labels merges (preserves existing labels), consistent with
     # --update-env-vars / --update-secrets; emit exactly one flag.
-    return ["--update-labels", ",".join(f"{k}={v}" for k, v in cr_labels.items())]
+    args.extend(["--update-labels", ",".join(f"{k}={v}" for k, v in cr_labels.items())])
+    return args
 
 
 @backoff.on_exception(

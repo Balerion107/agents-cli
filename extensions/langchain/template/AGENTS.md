@@ -8,10 +8,10 @@ over A2A. Read `.agents/skills/agents-cli-langchain/SKILL.md` before changing ei
 > container serves and traces normally, but everything that expects an ADK app is broken,
 > because this project serves A2A and no `reasoning_engine` routes:
 >
-> - `agents-cli publish gemini-enterprise` is refused: registration invokes the agent
+> - `agents-cli publish gemini` is refused: registration invokes the agent
 >   through `:streamQuery`. Publish from a Cloud Run or GKE deployment instead.
 > - The Console playground cannot invoke the agent.
-> - The Console's session and trace views stay empty (no managed Agent Engine sessions;
+> - The Console's session and trace views stay empty (no managed Agent Runtime sessions;
 >   traces still reach Cloud Trace).
 
 ## The loop

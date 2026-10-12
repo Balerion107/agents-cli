@@ -25,7 +25,7 @@ def _client() -> genai.Client:
     """
     client = getattr(_local, "client", None)
     if client is None:
-        # AI Studio (GEMINI_API_KEY) or Agent Platform (ADC).
+        # AI Studio (GEMINI_API_KEY) or Gemini platform (ADC).
         client = _local.client = genai.Client()
     return client
 

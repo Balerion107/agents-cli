@@ -241,7 +241,7 @@ def test_agent_card(server_fixture: subprocess.Popen[str]) -> None:
 def test_reasoning_engine_stream(server_fixture: subprocess.Popen[str]) -> None:
     """The reasoning_engine adapter (/api/stream_reasoning_engine) runs the agent.
 
-    This is the contract Agent Engine forwards :streamQuery calls to.
+    This is the contract Agent Runtime forwards :streamQuery calls to.
     """
     response = requests.post(
         f"{BASE_URL}/api/stream_reasoning_engine",

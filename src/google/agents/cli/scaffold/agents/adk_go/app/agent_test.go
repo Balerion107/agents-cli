@@ -14,6 +14,10 @@
 
 package {{cookiecutter.agent_directory}}
 
+// These tests cover the sample GetWeather tool in agent.go. When you replace
+// or remove the sample tools, replace these tests with tests for your own
+// tools, or `go test` stops compiling (`go build` still succeeds).
+
 import (
 	"strings"
 	"testing"

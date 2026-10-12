@@ -364,6 +364,7 @@ def upgrade(
     project_name = metadata.project_name or project_dir.name
     agent_directory = metadata.agent_directory or "app"
     cli_args = metadata_to_cli_args(metadata)
+    old_cli_args = metadata_to_cli_args(metadata, target_version=old_version)
 
     mode = InteractionMode(interactive=interactive, auto_approve=auto_approve)
 
@@ -401,7 +402,7 @@ def upgrade(
         project_name=project_name,
         agent_directory=agent_directory,
         language=language,
-        old_args=cli_args,
+        old_args=old_cli_args,
         new_args=cli_args,
         old_version=old_version,
         mode=mode,

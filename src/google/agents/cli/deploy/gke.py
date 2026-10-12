@@ -69,7 +69,7 @@ def deploy_gke(
     region,
     image,
     cluster_name,
-    update_env_vars,
+    env_vars,
     dry_run,
     service_name,
     session_type,
@@ -79,7 +79,7 @@ def deploy_gke(
     When ``image`` is provided (CI/CD mode), skips terraform and docker build.
     When ``image`` is None (local dev mode), runs targeted terraform + build flow.
     Both paths share cluster credentials, kubectl rollout, env-var injection
-    (AGENT_VERSION, any --update-env-vars, and APP_URL), and external IP steps.
+    (AGENT_VERSION, any --env-vars, and APP_URL), and external IP steps.
 
     ``session_type`` selects which optional resources the targeted apply must
     include; see ``_GKE_CLOUD_SQL_TARGETS``.
@@ -173,15 +173,15 @@ def deploy_gke(
         check_err_msg="kubectl set image failed",
     )
 
-    # Step 5: Inject runtime env vars (AGENT_VERSION, --update-env-vars, APP_URL).
-    # A user-supplied value (via --update-env-vars) takes precedence over the
+    # Step 5: Inject runtime env vars (AGENT_VERSION, --env-vars, APP_URL).
+    # A user-supplied value (via --env-vars) takes precedence over the
     # CLI-derived defaults, matching the Cloud Run and Agent Runtime paths.
     project_root = find_project_root() or Path.cwd()
     env_var_map = read_project_dotenv(project_root)
     try:
-        env_var_map.update(parse_key_value_pairs(update_env_vars))
+        env_var_map.update(parse_key_value_pairs(env_vars))
     except ValueError as e:
-        raise click.ClickException(f"argument --update-env-vars: {e}") from e
+        raise click.ClickException(f"argument --env-vars: {e}") from e
 
     # Skip the version read (and its warning) when the user has already supplied one.
     if "AGENT_VERSION" not in env_var_map:

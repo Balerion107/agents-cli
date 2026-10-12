@@ -20,7 +20,7 @@
 | `enhance` | `scaffold enhance` |
 | `upgrade` | `scaffold upgrade` |
 | `setup-cicd` | `infra cicd` |
-| `register-gemini-enterprise` | `publish gemini-enterprise` |
+| `register-gemini-enterprise` | `publish gemini` |
 
 ### Config Key
 

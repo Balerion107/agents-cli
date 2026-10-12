@@ -56,7 +56,7 @@ from google.genai import types as genai_types
 def _safe_tool_declarations(agent):
     """Return eval tool declarations for ``agent``, skipping what can't be introspected.
 
-    A drop-in for the Vertex eval SDK's ``_get_tool_declarations_from_agent``
+    A drop-in for the Gemini platform eval SDK's ``_get_tool_declarations_from_agent``
     with two guards so building eval metadata never crashes the runner:
 
     * a missing ``tools`` attribute (workflow agents like ``SequentialAgent``)
@@ -90,10 +90,9 @@ def _safe_tool_declarations(agent):
 def _patch_eval_tool_introspection():
     """Make the eval SDK tolerate ADK toolsets / tool-less workflow agents.
 
-    ``AgentInfo.load_from_agent`` (-> ``get_agents_map`` -> ``from_agent``)
-    crashes in the SDK's shared ``_get_tool_declarations_from_agent``.
-    Best-effort: a no-op if the SDK layout changes. See
-    https://github.com/googleapis/python-aiplatform/issues/6865.
+    The SDK's ``_get_tool_declarations_from_agent`` crashes on ADK toolsets.
+    Missing ``tools`` is fixed upstream (python-aiplatform#6865), but the
+    user's project may run an older SDK. No-op if the SDK layout changes.
     """
     try:
         AgentConfig = types.evals.AgentConfig
@@ -243,7 +242,7 @@ def main():
     _load_agent_dotenv(agent_dir)
     project = os.environ.get("GOOGLE_CLOUD_PROJECT") or None
     location = os.environ.get("GOOGLE_CLOUD_LOCATION") or None
-    # Only meaningful on Vertex AI; with an API key (AI Studio) both are unset.
+    # Only meaningful on Gemini platform; with an API key (AI Studio) both are unset.
     if project or location:
         print(f"[synthesize] project={project} location={location}", flush=True)
 
@@ -268,7 +267,7 @@ def main():
     # cannot import the factory (see cmd_dataset._stage_synthesize_runner).
     client = agentplatform.Client(project=project, location=location)  # noqa: TID251
     print(
-        f"Calling Vertex AI generate_conversation_scenarios "
+        f"Calling Gemini platform generate_conversation_scenarios "
         f"(project={project}, location={location})...",
         flush=True,
     )

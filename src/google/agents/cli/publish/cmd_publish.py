@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Utility to register an Agent Runtime to Gemini Enterprise."""
+"""Utility to register a deployed agent with Gemini."""
 
 import json
 import logging
@@ -56,7 +56,7 @@ def _strip_callback(
     return value.strip() if value else value
 
 
-# Only Gemini Enterprise (intranet) apps can be connected via registration.
+# Only intranet Gemini apps can be connected via registration.
 _GEMINI_ENTERPRISE_APP_TYPE = "APP_TYPE_INTRANET"
 
 
@@ -110,10 +110,10 @@ def parse_agent_runtime_id(agent_runtime_id: str) -> dict[str, str] | None:
 
 
 def parse_gemini_enterprise_app_id(app_id: str) -> dict[str, str] | None:
-    """Parse Gemini Enterprise app resource name to extract components.
+    """Parse a Gemini app resource name to extract components.
 
     Args:
-        app_id: Gemini Enterprise app resource name
+        app_id: Gemini app resource name
             (e.g., projects/{project_number}/locations/{location}/collections/{collection}/engines/{engine_id})
 
     Returns:
@@ -356,7 +356,7 @@ def prompt_for_agent_card_url_with_auto_construct(
 
 
 def get_agent_runtime_metadata(agent_runtime_id: str) -> tuple[str | None, str | None]:
-    """Fetch display_name and description from deployed Agent Runtime.
+    """Fetch display_name and description from the deployed Agent Runtime.
 
     Args:
         agent_runtime_id: Agent Runtime resource name
@@ -373,7 +373,7 @@ def get_agent_runtime_metadata(agent_runtime_id: str) -> tuple[str | None, str |
 
     try:
         client = AgentPlatformClient(project=project_id, location=location)
-        agent_runtime = client.agent_engines.get(name=agent_runtime_id)
+        agent_runtime = client.runtimes.get(name=agent_runtime_id)
 
         api_resource = agent_runtime.api_resource
         display_name = api_resource.display_name if api_resource else None
@@ -406,7 +406,7 @@ def prompt_for_agent_runtime_id(default_from_metadata: str | None) -> str:
     console.print(
         "\nEnter your Agent Runtime resource name"
         "\n[blue]Example: projects/123456789/locations/us-east1/reasoningEngines/1234567890[/]"
-        "\n(You can find this in the Agent Builder Console or deployment_metadata.json)"
+        "\n(You can find this in the Google Cloud console or deployment_metadata.json)"
     )
 
     while True:
@@ -425,7 +425,7 @@ def list_gemini_enterprise_apps(
     project_number: str,
     location: str = "global",
 ) -> list[dict] | None:
-    """List available Gemini Enterprise apps in a project.
+    """List available Gemini apps in a project.
 
     Args:
         project_number: GCP project number
@@ -449,7 +449,7 @@ def list_gemini_enterprise_apps(
         data = response.json()
         engines = data.get("engines", [])
 
-        # Filter for Gemini Enterprise apps
+        # Filter for Gemini apps
         return [e for e in engines if e.get("appType") == _GEMINI_ENTERPRISE_APP_TYPE]
 
     except requests.exceptions.HTTPError as e:
@@ -466,13 +466,13 @@ def list_gemini_enterprise_apps(
             else "unknown"
         )
         console.print(
-            f"⚠️  Could not list Gemini Enterprise apps: HTTP {error_code}",
+            f"⚠️  Could not list Gemini apps: HTTP {error_code}",
             style="yellow",
         )
         return None
     except Exception as e:
         console.print(
-            f"⚠️  Could not list Gemini Enterprise apps: {e}",
+            f"⚠️  Could not list Gemini apps: {e}",
             style="yellow",
         )
         return None
@@ -481,7 +481,7 @@ def list_gemini_enterprise_apps(
 def prompt_for_gemini_enterprise_components(
     default_project: str | None = None,
 ) -> str:
-    """Prompt user for Gemini Enterprise resource components and construct full ID.
+    """Prompt user for Gemini app resource components and construct full ID.
 
     Attempts to list available apps across all common locations in the project.
     Falls back to manual entry if listing fails or user chooses custom entry.
@@ -490,10 +490,10 @@ def prompt_for_gemini_enterprise_components(
         default_project: Default project number from Agent Runtime ID (unused, kept for compatibility)
 
     Returns:
-        Full Gemini Enterprise app resource name
+        Full Gemini app resource name
     """
     console.print("\n[blue]" + "=" * 70 + "[/]")
-    console.print("[blue]GEMINI ENTERPRISE CONFIGURATION[/]")
+    console.print("[blue]GEMINI APP CONFIGURATION[/]")
     console.print("[blue]" + "=" * 70 + "[/]")
 
     # Get current project ID from auth defaults
@@ -504,7 +504,7 @@ def prompt_for_gemini_enterprise_components(
     if current_project_id:
         console.print(f"\n✓ Current project: {current_project_id}")
         use_current = click.confirm(
-            "\nUse this project for Gemini Enterprise?", default=True
+            "\nUse this project for the Gemini app?", default=True
         )
         if use_current:
             project_id = current_project_id
@@ -512,8 +512,8 @@ def prompt_for_gemini_enterprise_components(
             project_id = click.prompt("Enter project ID", type=str).strip()
     else:
         console.print(
-            "\nYou need to provide the Gemini Enterprise app details."
-            "\nFind these in: Google Cloud Console → Gemini Enterprise → Apps"
+            "\nYou need to provide the Gemini app details."
+            "\nFind these in the Google Cloud console."
         )
         project_id = click.prompt("Project ID", type=str).strip()
 
@@ -531,7 +531,7 @@ def prompt_for_gemini_enterprise_components(
         console.print(f"✓ Project number: {project_number}")
 
     # Search across all common locations
-    console.print(f"\n[dim]Searching for Gemini Enterprise apps in {project_id}...[/]")
+    console.print(f"\n[dim]Searching for Gemini apps in {project_id}...[/]")
     all_engines = []
     common_locations = ["global", "us", "eu"]
 
@@ -545,7 +545,7 @@ def prompt_for_gemini_enterprise_components(
 
     # Show results if any apps found
     if len(all_engines) > 0:
-        console.print(f"\n✓ Found {len(all_engines)} Gemini Enterprise app(s):\n")
+        console.print(f"\n✓ Found {len(all_engines)} Gemini app(s):\n")
 
         # Display available apps with numbers
         for idx, engine in enumerate(all_engines, 1):
@@ -560,7 +560,7 @@ def prompt_for_gemini_enterprise_components(
             console.print(f"      ID: {short_id}")
 
         # Add option for custom entry
-        console.print("\n  [0] Enter a custom Gemini Enterprise ID\n")
+        console.print("\n  [0] Enter a custom Gemini app ID\n")
 
         # Prompt for selection
         while True:
@@ -586,7 +586,7 @@ def prompt_for_gemini_enterprise_components(
             selected_engine = all_engines[selection - 1]
             full_id = selected_engine.get("name")
 
-            console.print("\n✓ Selected Gemini Enterprise App:")
+            console.print("\n✓ Selected Gemini app:")
             console.print(f"  [bold]{full_id}[/]")
             confirmed = click.confirm("Use this app?", default=True)
 
@@ -600,7 +600,7 @@ def prompt_for_gemini_enterprise_components(
         # If user selected custom entry (0), fall through to manual entry
 
     else:
-        console.print(f"\n⚠️  No Gemini Enterprise apps found in project {project_number}")
+        console.print(f"\n⚠️  No Gemini apps found in project {project_number}")
         console.print("You can enter the details manually or try a different project.\n")
         retry = click.confirm("Try a different project?", default=False)
         if retry:
@@ -609,12 +609,11 @@ def prompt_for_gemini_enterprise_components(
     # Manual entry flow
     console.print("\n[blue]Manual Configuration[/]")
     console.print(
-        "\nEnter your Gemini Enterprise app details."
-        "\nFind these in: Google Cloud Console → Gemini Enterprise → Apps"
+        "\nEnter your Gemini app details.\nFind these in the Google Cloud console."
     )
 
     # Get location for manual entry
-    console.print("\nGemini Enterprise apps are typically in: global, us, or eu")
+    console.print("\nGemini apps are typically in: global, us, or eu")
     location = click.prompt(
         "Location/Region",
         type=str,
@@ -624,15 +623,15 @@ def prompt_for_gemini_enterprise_components(
 
     # Get short ID
     console.print(
-        "\nEnter your Gemini Enterprise ID (from the 'ID' column in the Apps table)."
+        "\nEnter your Gemini app ID (from the 'ID' column of the apps list)."
         "\n[blue]Example: gemini-enterprise-123456_1234567890[/]"
     )
-    ge_short_id = click.prompt("Gemini Enterprise ID", type=str).strip()
+    ge_short_id = click.prompt("Gemini app ID", type=str).strip()
 
     # Construct full resource name
     full_id = f"projects/{project_number}/locations/{location}/collections/default_collection/engines/{ge_short_id}"
 
-    console.print("\nConstructed Gemini Enterprise App ID:")
+    console.print("\nConstructed Gemini app ID:")
     console.print(f"  [bold]{full_id}[/]")
     confirmed = click.confirm("Is this correct?", default=True)
 
@@ -647,10 +646,10 @@ def prompt_for_gemini_enterprise_components(
 def get_gemini_enterprise_console_url(
     gemini_enterprise_app_id: str, project_id: str
 ) -> str | None:
-    """Construct Gemini Enterprise console URL.
+    """Construct the Google Cloud console URL for a Gemini app.
 
     Args:
-        gemini_enterprise_app_id: Full Gemini Enterprise app resource name
+        gemini_enterprise_app_id: Full Gemini app resource name
         project_id: GCP project ID (not number)
 
     Returns:
@@ -685,7 +684,7 @@ def _match_a2a_agent(agent: dict, card_url: str | None) -> bool:
     """Whether ``agent``'s stored card has the same ``url`` as ``card_url``.
 
     Compares the card's ``url`` (the RPC endpoint, e.g. ``.../a2a/<dir>``), not
-    the ``.well-known/agent-card.json`` fetch URL: GE stores the card body, so
+    the ``.well-known/agent-card.json`` fetch URL: the Gemini app stores the card body, so
     matching on the fetch URL never hits and re-publish would duplicate.
     """
     if not card_url:
@@ -771,7 +770,7 @@ def register_a2a_agent(
     project_id: str | None = None,
     authorization_id: str | None = None,
 ) -> tuple[dict, str]:
-    """Register an A2A agent to Gemini Enterprise, updating in place if it exists.
+    """Register an A2A agent with Gemini, updating in place if it exists.
 
     Looks up an existing registration for the same agent card URL and PATCHes it;
     otherwise creates a new one.
@@ -779,8 +778,8 @@ def register_a2a_agent(
     Args:
         agent_card: Agent card dictionary fetched from the agent
         agent_card_url: URL where the agent card was fetched from
-        gemini_enterprise_app_id: Full Gemini Enterprise app resource name
-        display_name: Display name for the agent in Gemini Enterprise
+        gemini_enterprise_app_id: Full Gemini app resource name
+        display_name: Display name for the agent in Gemini
         description: Description of the agent
         project_id: Optional GCP project ID for billing
         authorization_id: Optional OAuth authorization ID
@@ -795,7 +794,7 @@ def register_a2a_agent(
     parsed = parse_gemini_enterprise_app_id(gemini_enterprise_app_id)
     if not parsed:
         raise ValueError(
-            f"Invalid GEMINI_ENTERPRISE_APP_ID format. Expected: "
+            f"Invalid Gemini app ID format. Expected: "
             f"projects/{{project_number}}/locations/{{location}}/collections/{{collection}}/engines/{{engine_id}}, "
             f"got: {gemini_enterprise_app_id}"
         )
@@ -805,7 +804,7 @@ def register_a2a_agent(
     collection = parsed["collection"]
     engine_id = parsed["engine_id"]
 
-    # Use provided project ID or fallback to project number from GE app
+    # Use provided project ID or fallback to project number from the Gemini app
     if not project_id:
         project_id = project_number
 
@@ -832,9 +831,9 @@ def register_a2a_agent(
     if authorization_id:
         payload["authorizationConfig"] = {"agentAuthorization": authorization_id}
 
-    console.print("\n[blue]Registering A2A agent to Gemini Enterprise...[/]")
+    console.print("\n[blue]Registering A2A agent with Gemini...[/]")
     console.print(f"  Agent Card URL: {agent_card_url}")
-    console.print(f"  Gemini Enterprise App: {gemini_enterprise_app_id}")
+    console.print(f"  Gemini app: {gemini_enterprise_app_id}")
     console.print(f"  Display Name: {display_name}")
 
     return _upsert_agent(
@@ -856,16 +855,16 @@ def register_agent(
     project_id: str | None = None,
     authorization_id: str | None = None,
 ) -> tuple[dict, str]:
-    """Register an agent engine to Gemini Enterprise, updating in place if it exists.
+    """Register an Agent Runtime deployment with Gemini, updating in place if it exists.
 
     Looks up an existing registration for the same reasoning engine and PATCHes it;
     otherwise creates a new one.
 
     Args:
-        agent_runtime_id: Agent engine resource name (e.g., projects/.../reasoningEngines/...)
-        gemini_enterprise_app_id: Full Gemini Enterprise app resource name
+        agent_runtime_id: Agent Runtime resource name (e.g., projects/.../reasoningEngines/...)
+        gemini_enterprise_app_id: Full Gemini app resource name
             (e.g., projects/{project_number}/locations/{location}/collections/{collection}/engines/{engine_id})
-        display_name: Display name for the agent in Gemini Enterprise
+        display_name: Display name for the agent in Gemini
         description: Description of the agent
         tool_description: Description of what the tool does
         project_id: Optional GCP project ID for billing (extracted from agent_runtime_id if not provided)
@@ -882,7 +881,7 @@ def register_agent(
     parsed = parse_gemini_enterprise_app_id(gemini_enterprise_app_id)
     if not parsed:
         raise ValueError(
-            f"Invalid GEMINI_ENTERPRISE_APP_ID format. Expected: "
+            f"Invalid Gemini app ID format. Expected: "
             f"projects/{{project_number}}/locations/{{location}}/collections/{{collection}}/engines/{{engine_id}}, "
             f"got: {gemini_enterprise_app_id}"
         )
@@ -892,7 +891,7 @@ def register_agent(
     collection = parsed["collection"]
     engine_id = parsed["engine_id"]
 
-    # Use project from agent engine if not explicitly provided (for billing header)
+    # Use project from the Agent Runtime if not explicitly provided (for billing header)
     if not project_id:
         parsed_agent = parse_agent_runtime_id(agent_runtime_id)
         if parsed_agent:
@@ -931,9 +930,9 @@ def register_agent(
     if authorization_id:
         payload["authorization_config"] = {"tool_authorizations": [authorization_id]}
 
-    console.print("\n[blue]Registering agent to Gemini Enterprise...[/]")
+    console.print("\n[blue]Registering agent with Gemini...[/]")
     console.print(f"  Agent Runtime: {agent_runtime_id}")
-    console.print(f"  Gemini Enterprise App: {gemini_enterprise_app_id}")
+    console.print(f"  Gemini app: {gemini_enterprise_app_id}")
     console.print(f"  Display Name: {display_name}")
 
     return _upsert_agent(
@@ -946,7 +945,7 @@ def register_agent(
 
 
 def _list_gemini_enterprise_apps(project_id: str | None, interactive: bool) -> None:
-    """List Gemini Enterprise apps across all locations for the given project.
+    """List Gemini apps across all locations for the given project.
 
     Renders a rich table in interactive mode; emits a JSON ``{"apps": [...]}``
     line in non-interactive mode for LLM/CI consumers.
@@ -966,9 +965,7 @@ def _list_gemini_enterprise_apps(project_id: str | None, interactive: bool) -> N
         )
 
     if interactive:
-        console.print(
-            f"[dim]Searching for Gemini Enterprise apps in {resolved_project_id}...[/]"
-        )
+        console.print(f"[dim]Searching for Gemini apps in {resolved_project_id}...[/]")
 
     locations = ["global", "us", "eu"]
     all_engines: list[tuple[str, dict]] = []
@@ -994,12 +991,10 @@ def _list_gemini_enterprise_apps(project_id: str | None, interactive: bool) -> N
         return
 
     if not all_engines:
-        console.print(
-            f"\nNo Gemini Enterprise apps found in project {resolved_project_id}."
-        )
+        console.print(f"\nNo Gemini apps found in project {resolved_project_id}.")
         return
 
-    table = Table(title=f"Gemini Enterprise Apps — {resolved_project_id}")
+    table = Table(title=f"Gemini apps — {resolved_project_id}")
     table.add_column("Display Name", style="bold")
     table.add_column("Location")
     table.add_column("Resource Name", style="dim")
@@ -1018,7 +1013,7 @@ def _list_gemini_enterprise_apps(project_id: str | None, interactive: bool) -> N
 def default_registration_type(
     *, deployment_target: str | None, is_a2a: bool, has_agent_card_url: bool
 ) -> str:
-    """Pick the Gemini Enterprise registration path.
+    """Pick the Gemini registration path.
 
     An explicit agent card URL forces A2A. Agent Runtime defaults to native ADK
     invocation (``:streamQuery``); Cloud Run / GKE have no reasoning engine, so
@@ -1067,12 +1062,41 @@ def _finalize_registration(
         )
 
 
-@click.command("gemini-enterprise")
+def _resolve_gemini_app_id(
+    gemini_app_id: str | None, legacy_gemini_app_id: str | None
+) -> str | None:
+    """Pick the Gemini app ID from the flags, then the environment.
+
+    The flag and env var names from before the Gemini rebrand still work, because
+    projects generated by earlier versions pass them from their Makefile.
+    """
+    if gemini_app_id and legacy_gemini_app_id and gemini_app_id != legacy_gemini_app_id:
+        raise click.UsageError(
+            "--gemini-app-id and --gemini-enterprise-app-id disagree; "
+            "pass only --gemini-app-id."
+        )
+    if gemini_app_id or legacy_gemini_app_id:
+        return gemini_app_id or legacy_gemini_app_id
+    for env_var in ("GEMINI_APP_ID", "ID", "GEMINI_ENTERPRISE_APP_ID"):
+        value = os.getenv(env_var, "").strip()
+        if value:
+            return value
+    return None
+
+
+_GEMINI_APP_ID_REQUIRED = (
+    "Gemini app ID is required. Pass --gemini-app-id, set the GEMINI_APP_ID "
+    "environment variable, or pass --interactive for interactive mode."
+)
+
+
+@click.command("gemini")
 @click.option(
     "--agent-runtime-id",
     envvar="AGENT_RUNTIME_ID",
     callback=_strip_callback,
-    help="Agent Runtime resource name (e.g., projects/.../reasoningEngines/...). "
+    help="Resource name of the deployment on Agent Runtime in Gemini platform "
+    "(e.g., projects/.../reasoningEngines/...). "
     "If not provided, reads from deployment_metadata.json.",
 )
 @click.option(
@@ -1081,12 +1105,19 @@ def _finalize_registration(
     help="Path to deployment metadata file (default: deployment_metadata.json).",
 )
 @click.option(
-    "--gemini-enterprise-app-id",
+    "--gemini-app-id",
     callback=_strip_callback,
-    help="Gemini Enterprise app full resource name "
+    help="Gemini app full resource name "
     "(e.g., projects/{project_number}/locations/{location}/collections/{collection}/engines/{engine_id}). "
     "If not provided, the command will prompt you interactively. "
-    "Can also be set via ID or GEMINI_ENTERPRISE_APP_ID env var.",
+    "Can also be set via the GEMINI_APP_ID env var.",
+)
+# Pre-rebrand name of --gemini-app-id; see _resolve_gemini_app_id.
+@click.option(
+    "--gemini-enterprise-app-id",
+    "legacy_gemini_app_id",
+    callback=_strip_callback,
+    hidden=True,
 )
 @click.option(
     "--display-name",
@@ -1138,14 +1169,14 @@ def _finalize_registration(
     "--project-number",
     envvar="PROJECT_NUMBER",
     callback=_strip_callback,
-    help="GCP project number. Used as default when prompting for Gemini Enterprise configuration.",
+    help="GCP project number. Used as default when prompting for the Gemini app.",
 )
 @click.option(
     "--registration-type",
     envvar="REGISTRATION_TYPE",
     type=click.Choice(["a2a", "adk"], case_sensitive=False),
     help="Registration type: 'a2a' for A2A agents (requires agent card URL), "
-    "'adk' for ADK agents on Agent Runtime (requires agent engine ID). "
+    "'adk' for ADK agents on Agent Runtime (requires an Agent Runtime ID). "
     "If not provided, auto-detected from metadata or prompted.",
 )
 @click.option(
@@ -1160,13 +1191,14 @@ def _finalize_registration(
     "list_apps",
     is_flag=True,
     default=False,
-    help="List Gemini Enterprise apps in the current project and exit.",
+    help="List Gemini apps in the current project and exit.",
 )
-def register_gemini_enterprise(
+def register_gemini(
     *,
     agent_runtime_id: str | None,
     metadata_file: str,
-    gemini_enterprise_app_id: str | None,
+    gemini_app_id: str | None,
+    legacy_gemini_app_id: str | None,
     display_name: str | None,
     description: str | None,
     tool_description: str | None,
@@ -1179,18 +1211,20 @@ def register_gemini_enterprise(
     interactive: bool,
     list_apps: bool,
 ) -> None:
-    r"""Register a deployed agent with Gemini Enterprise.
+    """Register a deployed agent with Gemini.
 
     All required parameters must be supplied as flags in programmatic mode.
     Pass --interactive to be guided through missing values interactively.
 
     \b
-    Use --list to list Gemini Enterprise apps in the current project:
-      agents-cli publish gemini-enterprise --list
+    Use --list to list Gemini apps in the current project:
+      agents-cli publish gemini --list
     """
     if list_apps:
         _list_gemini_enterprise_apps(project_id, interactive)
         return
+
+    requested_gemini_app_id = _resolve_gemini_app_id(gemini_app_id, legacy_gemini_app_id)
 
     # The banner is human decoration printed to stdout; in non-interactive mode
     # stdout must stay pure JSON for machine consumers, so only show it interactively.
@@ -1229,7 +1263,7 @@ def register_gemini_enterprise(
             console.print(
                 "\nSelect registration type:\n"
                 "  [1] A2A - Agent-to-Agent protocol (requires agent card URL)\n"
-                "  [2] ADK - Agent Development Kit on Agent Runtime (requires agent engine ID)\n"
+                "  [2] ADK - Agent Development Kit on Agent Runtime in Gemini platform (requires an Agent Runtime ID)\n"
             )
             choice = click.prompt(
                 "Registration type (1 or 2)",
@@ -1293,8 +1327,8 @@ def register_gemini_enterprise(
         if deployment_target == "agent_runtime":
             logging.warning(
                 "A2A registration on Agent Runtime is not recommended for "
-                "Gemini Enterprise; prefer ADK registration "
-                "(--registration-type adk), which Gemini Enterprise invokes "
+                "the Gemini app; prefer ADK registration "
+                "(--registration-type adk), which the Gemini app invokes "
                 "natively via :streamQuery. Proceeding because A2A was requested "
                 "explicitly."
             )
@@ -1313,11 +1347,7 @@ def register_gemini_enterprise(
 
         console.print(f"✓ Fetched agent card: {agent_card.get('name', 'Unknown')}")
 
-        resolved_gemini_enterprise_app_id = (
-            gemini_enterprise_app_id
-            or (os.getenv("ID", "").strip() or None)
-            or (os.getenv("GEMINI_ENTERPRISE_APP_ID", "").strip() or None)
-        )
+        resolved_gemini_enterprise_app_id = requested_gemini_app_id
 
         if not resolved_gemini_enterprise_app_id:
             if interactive:
@@ -1339,11 +1369,7 @@ def register_gemini_enterprise(
                     )
                 )
             else:
-                raise click.ClickException(
-                    "Gemini Enterprise App ID is required. "
-                    "Set the ID or GEMINI_ENTERPRISE_APP_ID environment variable, "
-                    "or pass --interactive for interactive mode."
-                )
+                raise click.ClickException(_GEMINI_APP_ID_REQUIRED)
 
         # Get display name and description with smart defaults from agent card
         if not display_name:
@@ -1412,7 +1438,7 @@ def register_gemini_enterprise(
                 else:
                     raise click.ClickException(
                         "Agent Runtime ID is required. "
-                        "Set the AGENT_ENGINE_ID environment variable, use --agent-engine-id, "
+                        "Pass --agent-runtime-id, set the AGENT_RUNTIME_ID environment variable, "
                         "or pass --interactive for interactive mode."
                     )
         # Validate and parse Agent Runtime ID
@@ -1423,12 +1449,8 @@ def register_gemini_enterprise(
                 "Expected: projects/{{project}}/locations/{{location}}/reasoningEngines/{{id}}"
             )
 
-        # Step 2: Get Gemini Enterprise App ID
-        resolved_gemini_enterprise_app_id = (
-            gemini_enterprise_app_id
-            or (os.getenv("ID", "").strip() or None)
-            or (os.getenv("GEMINI_ENTERPRISE_APP_ID", "").strip() or None)
-        )
+        # Step 2: Get Gemini app ID
+        resolved_gemini_enterprise_app_id = requested_gemini_app_id
 
         if not resolved_gemini_enterprise_app_id:
             if interactive:
@@ -1438,11 +1460,7 @@ def register_gemini_enterprise(
                     )
                 )
             else:
-                raise click.ClickException(
-                    "Gemini Enterprise App ID is required. "
-                    "Set the ID or GEMINI_ENTERPRISE_APP_ID environment variable, "
-                    "or pass --interactive for interactive mode."
-                )
+                raise click.ClickException(_GEMINI_APP_ID_REQUIRED)
 
         # Step 3: Get display name and description
         auto_display_name, auto_description = get_agent_runtime_metadata(

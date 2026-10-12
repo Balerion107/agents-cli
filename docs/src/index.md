@@ -14,7 +14,7 @@ hide:
 
 <div class="hero-grid">
   <div class="hero-content">
-    <p class="headline"><strong><code>agents-cli</code></strong><br><span class="headline-sub">in Agent Platform</span></p>
+    <p class="headline"><strong><code>agents-cli</code></strong><br><span class="headline-sub">in Gemini platform</span></p>
     <p class="tagline">CLI and skills for building agents on Google Cloud.</p>
     <div class="home-cta">
       <a href="guide/getting-started/" class="cta-primary">Get Started &rarr;</a>

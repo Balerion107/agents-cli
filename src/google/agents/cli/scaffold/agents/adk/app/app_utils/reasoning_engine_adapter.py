@@ -14,12 +14,12 @@
 
 """Serve the reasoning_engine ``{class_method, input}`` contract over HTTP.
 
-Exists to guarantee support for the Vertex AI Console Playground and Gemini
-Enterprise (via ADK registration), which both invoke the engine through this
-contract. Agent Engine forwards calls to ``/api/reasoning_engine`` (sync) and
+Exists to guarantee support for the Google Cloud console playground and Gemini
+(via ADK registration), which both invoke the engine through this contract.
+Agent Runtime forwards calls to ``/api/reasoning_engine`` (sync) and
 ``/api/stream_reasoning_engine`` (streaming); dispatch is limited to the
-:class:`AdkApp` ``register_operations()`` methods so the wire output matches a
-packaged Agent Engine.
+:class:`AdkApp` ``register_operations()`` methods so the wire output matches an
+agent packaged for Agent Runtime.
 """
 
 import inspect

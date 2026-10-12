@@ -310,7 +310,7 @@ def cmd_run(
 
     \b
       a2a       A2A protocol
-      adk       ADK SSE (/run_sse, or :streamQuery for Agent Runtime)
+      adk       ADK SSE (/run_sse, or :streamQuery for Agent Runtime in Gemini platform)
       adk_live  ADK bidi WebSocket (/run_live), for Live and voice agents
 
     \b
@@ -603,6 +603,15 @@ def _print_sse_event(
     empty turn from one that just streamed nothing renderable. Appends paths of
     any saved binary artifacts to ``artifacts``.
     """
+    # A bare top-level {"error": ...} is the last frame ADK sends before closing
+    # the stream on a failed run (e.g. the model call was rejected). The run
+    # failed, so fail the command rather than report an empty turn.
+    fatal_error = event.get("error")
+    if fatal_error:
+        if last_author is not None:
+            click.echo()  # end the partially streamed line before the error
+        raise click.ClickException(f"Agent run failed: {fatal_error}")
+
     rendered = False
     content = event.get("content")
     parts = content.get("parts", []) if isinstance(content, dict) else []

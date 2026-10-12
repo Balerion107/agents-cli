@@ -27,6 +27,7 @@ import click
 import requests
 
 from google.agents.cli._agent_platform import AgentPlatformClient
+from google.agents.cli._project import AGENT_IDENTITY
 from google.agents.cli.auth import get_access_token
 from google.agents.cli.deploy._utils import parse_secrets
 from google.agents.cli.deploy.agent_runtime import _resolve_target_agent
@@ -74,6 +75,7 @@ def validate_agent_runtime_deployment(
     secrets: str | None,
     update_only: bool,
     agent_identity: bool | None,
+    identity_type_default: str,
 ) -> None:
     """Check what an Agent Runtime deploy needs, and stop if a check fails."""
     click.echo("\n🔎 Validating the deployment (no resources are changed)...")
@@ -111,9 +113,14 @@ def validate_agent_runtime_deployment(
             update_only=update_only,
         )
         results.append(engine_result)
+    # None when the engine lookup could not run.
+    will_create = (engine is None) if engine_known else None
+
+    if will_create and agent_identity is None:
+        agent_identity = identity_type_default == AGENT_IDENTITY
 
     permissions = _deploy_permissions(
-        creates=(engine is None) if engine_known else None,
+        creates=will_create,
         update_only=update_only,
         agent_identity=agent_identity,
     )

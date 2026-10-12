@@ -29,6 +29,10 @@ commands:
     compliance-report:
       run: ["bash", "scripts/compliance_report.sh"]
       description: Generate the quarterly compliance report.
+
+skills:                   # coding-agent skills, copied into .agents/skills on add
+  my-guide:               # skill name; should match `name` in its SKILL.md
+    path: skills/guide    # a directory with a SKILL.md
 ```
 
 ---
@@ -41,7 +45,18 @@ commands:
 - **Chaining lives in a wrapper script**, since `run:` is a single vector, not a shell line. Point `run:` at a script that sequences the steps (check, then `agents-cli deploy "$@"`).
 - **`name` is a single path component** matching `[A-Za-z0-9._-]+` (it becomes a directory under `extensions/`); slashes, `.`, and `..` are rejected.
 - **Conflicts** (same scope, surfaced in `agents-cli extension list` and `agents-cli info`): two extensions claiming one command is first-wins, and the later one is ignored. Cross-scope is not a conflict — project wins over user (`--global`).
-- **Ship your own agent** as a template built on the `empty_py` base — shared project scaffolding (infra + deps, no `app/`, no ADK) you drop your own `app/` onto, keeping the `app.fast_api_app:app` entrypoint so deploy is unchanged. Put an `agents-cli-extension.yaml` at the template root and users get its overrides by scaffolding from it, with nothing installed. The [LangChain template](first-party.md#langchain) is the worked example.
+- **Skill keys and paths:**
+    - The key is the skill's folder name in `.agents/skills/`.
+    - The key follows the Agent Skills name rule: at most 64 lowercase letters, digits and single hyphens, with no hyphen at the start or end.
+    - The key must not be a Windows device name such as `con` or `nul`, and must not start with `google-agents-cli-`.
+    - Each `path` is relative to the directory that holds `agents-cli-extension.yaml` and must stay inside it, because only that directory is vendored.
+    - A `path` must not be or go through a folder that vendoring drops (for example `build`, `dist`, `venv` or `node_modules`), and must not be a link. Folders with these names inside a skill folder are dropped too.
+- **Skill lifecycle:**
+    - `extension add` copies each skill folder without its links (as vendoring does) and adds a `.agents-cli-extension` marker file with the extension name and the skill name.
+    - `agents-cli install` re-copies all of an extension's skills when any of them is missing or differs from the vendored copy. It also deletes the skills of extensions that are no longer recorded; see [Using extensions](using.md#lifecycle-lockfile-style) for when it deletes none.
+    - `extension update` replaces them with the new version's skills and removes any it no longer declares. If the new skills cannot be installed, it keeps the old pin.
+    - `extension remove` deletes the skill folders owned by the extension.
+- **Ship your own agent** as a template built on the `empty_py` base — shared project scaffolding (infra + deps, no `app/`, no ADK) you drop your own `app/` onto, keeping the `app.fast_api_app:app` entrypoint so deploy is unchanged. Put an `agents-cli-extension.yaml` at the template root and users get its overrides by scaffolding from it, with nothing installed. To ship skills with a template, put them under `.agents/skills/` in the template; scaffolding copies them as-is. A `skills:` map in the template's manifest is ignored, because nothing installs it. The [LangChain template](first-party.md#langchain) is the worked example.
 - **A root `AGENTS.md` in your template becomes the project's coding-agent guide**, written under whatever the project calls it (`GEMINI.md` by default, or `--agent-guidance-filename`), so it replaces the base guide instead of landing beside it. Keep it to what differs; the rest belongs in the skill your template ships.
 - **Commit a `uv.lock` in your template.** It is copied into the project as-is, so without one two scaffolds a week apart resolve differently, and so do two Docker builds of the same commit.
 - **List every deployment target you support**, including `none`, in your template's `.template/templateconfig.yaml` under `settings.deployment_targets`. The CLI enforces that list, and `--prototype` resolves to `none`, so a template that omits it cannot be scaffolded in prototype mode.

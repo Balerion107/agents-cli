@@ -30,6 +30,8 @@ commands:
       run: ["uv", "run", "python", "scripts/run.py"]
       description: Run the compiled agent graph with a single prompt.
 
+    # Claimed under the pre-rename name so CLIs that predate `publish gemini`
+    # still apply it; newer CLIs mirror the override onto `publish gemini`.
     publish.gemini-enterprise:
       run: ["uv", "run", "--with", "pyyaml", "python", "scripts/publish.py"]
       description: Register over A2A; refuse on Agent Runtime, which needs ADK.

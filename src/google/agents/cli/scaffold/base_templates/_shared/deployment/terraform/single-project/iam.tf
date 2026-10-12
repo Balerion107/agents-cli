@@ -34,6 +34,7 @@ resource "google_project_iam_member" "default_compute_sa_storage_object_creator"
   member     = "serviceAccount:${data.google_project.project.number}-compute@developer.gserviceaccount.com"
   depends_on = [resource.google_project_service.services]
 }
+{%- if not (cookiecutter.deployment_target == 'agent_runtime' and cookiecutter.agent_runtime_identity_default == 'agent_identity') %}
 
 # Agent service account
 resource "google_service_account" "app_sa" {
@@ -58,9 +59,10 @@ resource "google_project_iam_member" "app_sa_roles" {
   member     = "serviceAccount:${google_service_account.app_sa.email}"
   depends_on = [resource.google_project_service.services]
 }
+{%- endif %}
 
 {% if cookiecutter.deployment_target == 'agent_runtime' %}
-# Grant required permissions to Vertex AI service account for Agent Runtime
+# Grant required permissions to the Gemini platform service agent for Agent Runtime
 resource "google_project_iam_member" "vertex_ai_sa_permissions" {
   for_each = {
     for pair in setproduct(keys(local.project_ids), var.app_sa_roles) :
@@ -72,4 +74,21 @@ resource "google_project_iam_member" "vertex_ai_sa_permissions" {
   member  = google_project_service_identity.vertex_sa.member
   depends_on = [resource.google_project_service.services]
 }
+{%- if cookiecutter.agent_runtime_identity_default == 'agent_identity' %}
+
+# An Agent Identity principal only exists once its engine does.
+resource "google_project_iam_member" "agent_identity_roles" {
+  for_each = toset(var.agent_identity_roles)
+
+  project = var.project_id
+  role    = each.value
+  member  = "principal://${google_vertex_ai_reasoning_engine.app.spec[0].effective_identity}"
+}
+
+resource "google_storage_bucket_iam_member" "agent_identity_logs_bucket" {
+  bucket = google_storage_bucket.logs_data_bucket.name
+  role   = "roles/storage.objectAdmin"
+  member = "principal://${google_vertex_ai_reasoning_engine.app.spec[0].effective_identity}"
+}
+{%- endif %}
 {% endif %}

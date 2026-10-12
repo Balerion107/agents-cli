@@ -36,7 +36,7 @@ The command reads your `deployment_target` from `agents-cli-manifest.yaml` (unde
 
 | `deployment_target`  | What happens                                  |
 |----------------------|-----------------------------------------------|
-| `agent_runtime`      | Agent Runtime deployment (fully managed)       |
+| `agent_runtime`      | Deployment to Agent Runtime in Gemini platform (fully managed) |
 | `cloud_run`          | `gcloud beta run deploy` (container on Cloud Run) |
 | `gke`                | Terraform + Docker build + `kubectl apply`     |
 
@@ -72,7 +72,7 @@ agents-cli deploy --status  # Check deployment status
 
 *Selected with `agents-cli create my-agent -d agent_runtime`, or `create_params.deployment_target: agent_runtime` in `agents-cli-manifest.yaml`.*
 
-Fully managed runtime: you provide a `Dockerfile` (scaffolded for you) and Agent Engine builds and runs the container — no cluster or service to operate:
+Fully managed runtime: you provide a `Dockerfile` (scaffolded for you) and Agent Runtime builds and runs the container — no cluster or service to operate:
 
 ```bash
 agents-cli deploy --project my-gcp-project --region us-east1

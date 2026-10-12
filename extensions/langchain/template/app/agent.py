@@ -1,7 +1,7 @@
 # ruff: noqa
 """LangChain agent: a Gemini ReAct agent with a sample tool.
 
-Uses Vertex AI with Application Default Credentials, or AI Studio when
+Uses Gemini platform with Application Default Credentials, or AI Studio when
 `GOOGLE_API_KEY` or `GEMINI_API_KEY` is set in the environment or a `.env` file.
 """
 

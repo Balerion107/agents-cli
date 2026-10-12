@@ -20,7 +20,7 @@ import uuid
 
 from locust import HttpUser, between, task
 
-# Resolve the deployed Agent Runtime from deployment metadata. Agent Engine has
+# Resolve the deployed Agent Runtime from deployment metadata. Agent Runtime has
 # no public service URL; it proxies the container's HTTP routes (e.g. /run_sse)
 # under the reasoningEngines ".../api/<route>" passthrough path.
 with open("deployment_metadata.json", encoding="utf-8") as f:

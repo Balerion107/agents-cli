@@ -94,7 +94,7 @@ def generate_traces(
 ) -> dict:
     """Fill each eval case with the agent's replies. Returns the same shape.
 
-    Matches what `eval grade` (the Vertex eval service) requires of a trace:
+    Matches what `eval grade` (the Eval Service in Gemini platform) requires of a trace:
     every turn carries `turn_index`/`turn_id`, and the case carries the final
     reply under `responses`. Without those the service rejects the file with
     `turns[0].turn_index: Required field is not set` or scores nothing because

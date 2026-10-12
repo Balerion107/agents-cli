@@ -24,7 +24,7 @@ from google.adk.runners import Runner
 
 from {{cookiecutter.agent_directory}}.app_utils import services
 from {{cookiecutter.agent_directory}}.app_utils.a2a import attach_a2a_routes
-{#- Agent Engine is the only target that installs aiplatform[agent-engines],
+{#- Agent Runtime is the only target that installs aiplatform[agent-engines],
     so the adapter can only be imported there. #}
 {%- if cookiecutter.deployment_target == "agent_runtime" %}
 from {{cookiecutter.agent_directory}}.app_utils.reasoning_engine_adapter import (
@@ -83,7 +83,7 @@ app.title = "{{cookiecutter.project_name}}"
 app.description = "API for interacting with the Agent {{cookiecutter.project_name}}"
 {%- if cookiecutter.deployment_target == "agent_runtime" %}
 
-# Proxy routes so the Vertex AI Console Playground (reasoning_engine SDK) can
+# Proxy routes so the Google Cloud console playground (reasoning_engine SDK) can
 # talk to this agent alongside the native adk_api routes.
 attach_reasoning_engine_routes(app)
 {%- endif %}

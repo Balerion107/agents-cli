@@ -27,7 +27,7 @@ settings:
     # prereleases without a global --prerelease=allow.
     # TODO: b/538173868 - drop once ADK caps opentelemetry-resourcedetector-gcp upstream.
     - "opentelemetry-resourcedetector-gcp<=1.12.0a0"
-    - "gcsfs>=2024.11.0"
+    - "gcsfs>=2026.10.0"
     - "a2a-sdk[http-server]>=1.0,<2"
     # google-genai calls aiohttp.StreamReader.readline(max_line_length=...), added in
     # aiohttp 3.13.4, but under-declares aiohttp>=3.10.11. Floor it so remote templates

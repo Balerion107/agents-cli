@@ -120,12 +120,12 @@ RAG is a clone-and-study recipe — see [Extending the starter agent](developmen
 
 ### Institutional Memory Navigator
 
-*Intermediate · RAG recipe · Gemini Enterprise*
+*Intermediate · RAG recipe · Gemini*
 
-Deploy in Gemini Enterprise with permissioned access to Drive, Google Chat, and email. Respond to questions such as "How do I get production database access?" with both the documented process and the current operational reality.
+Deploy in Gemini with permissioned access to Drive, Google Chat, and email. Respond to questions such as "How do I get production database access?" with both the documented process and the current operational reality.
 
 ```
-Build a RAG agent for new-hire questions that knows both official docs and how things actually work. Publish it to Gemini Enterprise.
+Build a RAG agent for new-hire questions that knows both official docs and how things actually work. Publish it to Gemini.
 ```
 
 See the [`google-agents-cli-publish`](../reference/skills.md) skill for registration details.
@@ -140,7 +140,7 @@ Long-running workflows or multi-agent coordination. Requires dedicated infrastru
 
 *Advanced · RAG recipe*
 
-Index a target codebase of approximately 500,000 lines. Analyze technical debt, security vulnerabilities, license compliance, and deployment complexity. Produce a risk report with line numbers, dependency graphs, and CVE references. Multi-day analysis benefits from Agent Runtime's extended sessions and checkpointing.
+Index a target codebase of approximately 500,000 lines. Analyze technical debt, security vulnerabilities, license compliance, and deployment complexity. Produce a risk report with line numbers, dependency graphs, and CVE references. Multi-day analysis benefits from the extended sessions and checkpointing of Agent Runtime in Gemini platform.
 
 ```
 Build a due-diligence agent that indexes a target codebase, runs security and license scans, and produces a risk report with citations.

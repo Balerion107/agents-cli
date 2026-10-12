@@ -24,7 +24,7 @@ import (
 //
 // Order:
 //  1. APP_URL — injected by the deployment (Cloud Run and GKE set it).
-//  2. Otherwise, when the Agent Engine runtime env is present, self-derive the
+//  2. Otherwise, when the Agent Runtime env is present, self-derive the
 //     public reasoning-engine HTTP passthrough URL.
 //  3. Otherwise, a localhost URL for local development.
 func resolveAppURL() string {

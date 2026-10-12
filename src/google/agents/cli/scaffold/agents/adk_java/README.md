@@ -36,7 +36,7 @@ A Java agent built with Google's Agent Development Kit (ADK).
 - Java 17 or later
 - Maven 3.9 or later
 - Google Cloud SDK (`gcloud`)
-- A Google Cloud project with Vertex AI enabled
+- A Google Cloud project with Gemini platform enabled
 
 ## Quick Start
 
@@ -72,7 +72,7 @@ A Java agent built with Google's Agent Development Kit (ADK).
 | `make load-test` | Run load tests (requires running server) |
 | `make inspector` | Launch A2A Protocol Inspector |
 | `make setup-dev-env` | Set up Terraform infrastructure |
-| `make publish-gemini-enterprise` | Register agent with Gemini Enterprise |
+| `make publish-gemini` | Register agent with Gemini (alias of `make publish-gemini-enterprise`) |
 
 ## Deployment
 
@@ -124,4 +124,4 @@ This intelligently merges updates while preserving your customizations. Use `--d
 ## Learn More
 
 - [ADK for Java Documentation](https://google.github.io/adk-docs/)
-- [Vertex AI Documentation](https://cloud.google.com/vertex-ai/docs)
+- [Gemini platform documentation](https://cloud.google.com/vertex-ai/docs)

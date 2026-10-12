@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Register with Gemini Enterprise, except where the contract needs ADK.
+"""Register with Gemini, except where the contract needs ADK.
 
 On Agent Runtime the built-in registers the agent for native `:streamQuery`,
 which only an ADK app serves. Everywhere else it registers over A2A, which this
@@ -40,8 +40,8 @@ def _deployment_target() -> str:
 def main() -> int:
     if _deployment_target() == "agent_runtime":
         print(
-            "agents-cli publish gemini-enterprise is not supported by the langchain "
-            "extension on Agent Runtime: registration there invokes the agent with "
+            "Publishing to Gemini is not supported by the langchain extension on "
+            "Agent Runtime: registration there invokes the agent with "
             "ADK's :streamQuery contract, which this project does not serve. Deploy "
             "to cloud_run or gke and publish from there, where registration is A2A.",
             file=sys.stderr,
@@ -49,6 +49,7 @@ def main() -> int:
         return 2
 
     env = {**os.environ, "AGENTS_CLI_DISABLE_OVERRIDES": "1"}
+    # The pre-rename name, which every agents-cli version accepts.
     return subprocess.run(
         ["agents-cli", "publish", "gemini-enterprise", *sys.argv[1:]], env=env
     ).returncode
