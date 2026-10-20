@@ -124,8 +124,9 @@ def cmd_submit(
             )
         else:
             console.print("Resource Name: [bold]Unknown[/bold]")
-            console.print(
-                "[yellow]Could not retrieve the evaluation run resource name. Please check the Google Cloud Console to track the status of the run.[/yellow]"
+            logging.warning(
+                "Could not retrieve the evaluation run resource name. Please check "
+                "the Google Cloud Console to track the status of the run."
             )
     except click.ClickException:
         raise

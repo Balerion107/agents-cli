@@ -22,6 +22,7 @@ from click.core import ParameterSource
 
 from google.agents.cli._gcp_project import resolve_gcp_project
 from google.agents.cli._project import (
+    CREATE_PROJECT_HINT,
     ProjectConfig,
     chdir_project_root,
     check_cli_version,
@@ -626,7 +627,7 @@ def _load_deploy_config(
             "No agents-cli-manifest.yaml found in the current directory or its parents.\n"
             "  Run this command from your project root, pass --deployment-target to\n"
             "  deploy without a manifest, or create a project first:\n"
-            "    agents-cli create my-agent"
+            f"{CREATE_PROJECT_HINT}"
         )
     if project_root is not None:
         chdir_project_root(project_root)

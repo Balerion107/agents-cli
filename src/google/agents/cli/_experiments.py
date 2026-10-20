@@ -28,6 +28,10 @@ class Experiment(NamedTuple):
 _REGISTRY: dict[str, Experiment] = {
     # Hides the `build` command until Go (compiled-language) support launches.
     "build_command": Experiment("build_command", bool, True),
+    # Gate in-progress ADK language support until each language launches.
+    "adk_java": Experiment("adk_java", bool, False),
+    "adk_kotlin": Experiment("adk_kotlin", bool, False),
+    "adk_typescript": Experiment("adk_typescript", bool, False),
 }
 
 

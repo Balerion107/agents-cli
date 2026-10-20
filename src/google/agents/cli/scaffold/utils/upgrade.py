@@ -798,6 +798,9 @@ def update_acli_metadata(
         acli_version: If provided, update acli_version
         remove_keys: List of keys to remove from create_params section
         base_template: If provided, record it at the manifest top level
+
+    Returns:
+        True if the manifest was written.
     """
     manifest_path = project_dir / "agents-cli-manifest.yaml"
     if not manifest_path.exists():
@@ -1008,8 +1011,10 @@ def migrate_legacy_evalsets(project_dir: pathlib.Path, dry_run: bool = False) ->
     """Convert tests/eval/evalsets/*.evalset.json to tests/eval/datasets/*-dataset.json.
 
     No-op when the legacy directory is absent. Skips destination files
-    that already exist. Does not delete the legacy directory; the user
-    removes it after verifying the conversion.
+    that already exist, and warns only when one holds different JSON than
+    the converted file. Reports legacy files it cannot read or convert.
+    Does not delete the legacy directory; the user removes it after
+    verifying the conversion.
     """
     import click
 
@@ -1036,20 +1041,25 @@ def migrate_legacy_evalsets(project_dir: pathlib.Path, dry_run: bool = False) ->
 
     output_dir.mkdir(parents=True, exist_ok=True)
     converted = 0
-    skipped: list[str] = []
+    conflicting: list[str] = []
     failed: list[tuple[str, str]] = []
 
     for src in legacy_files:
         dest = output_dir / _legacy_to_new_filename(src.name)
-        if dest.exists():
-            skipped.append(dest.name)
-            continue
         try:
             old_payload = json.loads(src.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as e:
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
             failed.append((src.name, str(e)))
             continue
-        new_payload = _convert_eval_set(old_payload)
+        try:
+            new_payload = _convert_eval_set(old_payload)
+        except (AttributeError, TypeError):
+            failed.append((src.name, "not in the legacy .evalset.json format"))
+            continue
+        if dest.exists():
+            if _read_json_or_none(dest) != new_payload:
+                conflicting.append(dest.name)
+            continue
         dest.write_text(json.dumps(new_payload, indent=2) + "\n", encoding="utf-8")
         converted += 1
 
@@ -1061,14 +1071,16 @@ def migrate_legacy_evalsets(project_dir: pathlib.Path, dry_run: bool = False) ->
             fg="cyan",
             dim=True,
         )
-    if skipped:
-        click.secho(
-            f"  ▸ WARNING: did NOT migrate {len(skipped)} legacy eval file(s) — "
-            f"a file already exists at the destination: {', '.join(skipped)}. "
-            f"The legacy file(s) remain in {_LEGACY_EVALSETS_DIR}/ unconverted. "
-            "Reconcile manually before deleting the legacy directory.",
-            fg="yellow",
-            bold=True,
+    if conflicting:
+        logging.warning(
+            "Did NOT migrate %d legacy eval file(s) — these files already exist "
+            "in %s/ and differ from the converted ones: %s. The legacy file(s) "
+            "remain in %s/ unconverted. Reconcile manually before deleting the "
+            "legacy directory.",
+            len(conflicting),
+            _NEW_DATASETS_DIR,
+            ", ".join(conflicting),
+            _LEGACY_EVALSETS_DIR,
         )
     if failed:
         for name, err in failed:
@@ -1078,7 +1090,7 @@ def migrate_legacy_evalsets(project_dir: pathlib.Path, dry_run: bool = False) ->
             fg="yellow",
             dim=True,
         )
-    if converted and not skipped and not failed:
+    if converted and not conflicting and not failed:
         click.secho(
             f"  ▸ All legacy evalsets migrated. You can delete "
             f"{_LEGACY_EVALSETS_DIR}/ once you've verified the converted files.",
@@ -1087,20 +1099,25 @@ def migrate_legacy_evalsets(project_dir: pathlib.Path, dry_run: bool = False) ->
         )
 
 
+def _read_json_or_none(path: pathlib.Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return None
+
+
 def warn_legacy_eval_config(project_dir: pathlib.Path) -> None:
     """Warn if a legacy tests/eval/eval_config.json is left over after upgrade."""
-    import click
-
     if not (project_dir / _LEGACY_EVAL_CONFIG).is_file():
         return
 
-    click.secho(
-        f"  ▸ WARNING: found legacy {_LEGACY_EVAL_CONFIG}. Grading now reads "
-        f"{_NEW_EVAL_CONFIG}; your custom criteria will NOT apply until "
-        f"migrated. The two schemas differ, so this is not auto-converted. "
-        f"See migration guide: {_EVAL_MIGRATION_URL}",
-        fg="yellow",
-        bold=True,
+    logging.warning(
+        "Found legacy %s. Grading now reads %s; your custom criteria will NOT "
+        "apply until migrated. The two schemas differ, so this is not "
+        "auto-converted. See migration guide: %s",
+        _LEGACY_EVAL_CONFIG,
+        _NEW_EVAL_CONFIG,
+        _EVAL_MIGRATION_URL,
     )
 
 

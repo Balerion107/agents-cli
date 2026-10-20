@@ -18,6 +18,8 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
+import sys
 from functools import cache
 from pathlib import Path
 
@@ -161,8 +163,13 @@ def require_tool(name: str, install_hint: str = "") -> str:
 # Where `agents-cli setup` fetches the bundled skills from.
 DEFAULT_SKILLS_SOURCE = "https://github.com/google/agents-cli"
 
+# Markers in `npx skills` output: the arrow before an install path, and the
+# rail drawn along the left edge of its result boxes.
+_PATH_ARROW = "→".encode()
+_BOX_RAIL = "│".encode()
 
-def run_npx_skills(args: list[str], spinner_msg: str):
+
+def run_npx_skills(args: list[str]):
     """Run an npx skills command, streaming output in real-time.
 
     Always starts with ``["npx", "-y", SKILLS_NPX_PACKAGE]`` and appends
@@ -171,13 +178,61 @@ def run_npx_skills(args: list[str], spinner_msg: str):
     Raises:
         click.ClickException: If the npx process exits non-zero.
     """
-    from google.agents.cli._runner import run_resolved
+    from google.agents.cli._runner import popen_resolved, run_resolved
     from google.agents.cli._skills_check import SKILLS_NPX_PACKAGE
 
     full_args = ["npx", "-y", SKILLS_NPX_PACKAGE, *args]
     click.secho(f"  ▸ {shlex.join(full_args)}", fg="cyan", dim=True)
 
     try:
-        run_resolved(full_args, check=True, encoding="utf-8", errors="replace")
+        # skills@1.5.9 lists a copied skill's path once per coding agent, so
+        # with --workspace the same "→ path" line repeats for every agent
+        # sharing .agents/skills (b/567853687). Newer releases fix that but
+        # bring back google/agents-cli#59, so collapse the repeats here. Only
+        # for "add": it never prompts (always -y), while other commands such as
+        # "update" can show prompts that break when stdout is a pipe.
+        if args[0] == "add":
+            with popen_resolved(
+                full_args, stdout=subprocess.PIPE, env=_npx_color_env()
+            ) as process:
+                _copy_without_repeated_paths(
+                    process.stdout, click.get_binary_stream("stdout")
+                )
+            if process.returncode:
+                raise subprocess.CalledProcessError(process.returncode, full_args)
+        else:
+            run_resolved(full_args, check=True, encoding="utf-8", errors="replace")
     except Exception as e:
         raise click.ClickException("Error running npx skills") from e
+
+
+def _npx_color_env():
+    """Return an environment that keeps npx colors when its stdout is a pipe."""
+    env = os.environ.copy()
+    # Not on Windows, where re-emitted escapes can render wrongly (b/525049570).
+    if os.name != "nt" and sys.stdout.isatty() and "NO_COLOR" not in env:
+        env.setdefault("FORCE_COLOR", "1")
+    return env
+
+
+def _copy_without_repeated_paths(source, out):
+    """Copy ``source`` to ``out``, dropping consecutive duplicate path lines."""
+    previous = None
+    pending = b""
+    while chunk := source.read1(4096):
+        *lines, pending = (pending + chunk).split(b"\n")
+        for line in lines:
+            if _PATH_ARROW in line and line == previous:
+                continue
+            out.write(line + b"\n")
+            previous = line
+        # Flush partial lines (spinner frames) right away, but hold back a
+        # partial box line so it can still be compared once complete.
+        if pending and _BOX_RAIL not in pending:
+            out.write(pending)
+            pending = b""
+            previous = None
+        out.flush()
+    if pending:
+        out.write(pending)
+        out.flush()

@@ -15,6 +15,7 @@
 import logging
 import os
 import pathlib
+import re
 import shlex
 import subprocess
 import sys
@@ -25,7 +26,7 @@ import click
 from packaging import version as pkg_version
 from rich.prompt import IntPrompt, Prompt
 
-from google.agents.cli._output import Console
+from google.agents.cli._output import Console, configure_logging
 from google.agents.cli._project import (
     ProjectConfig,
     find_project_config,
@@ -33,7 +34,7 @@ from google.agents.cli._project import (
 from google.agents.cli._runner import run_resolved
 from google.agents.cli._tools import ToolNotFoundError, require_tool
 
-from ..utils import remote_template
+from ..utils import adk_shortcut, remote_template
 from ..utils.backup import make_backup_pre_apply_hook
 from ..utils.cli_options import InteractionMode, shared_template_options
 from ..utils.generation_metadata import metadata_to_cli_args
@@ -44,7 +45,7 @@ from ..utils.language import (
     validate_agent_file,
 )
 from ..utils.logging import display_welcome_banner
-from ..utils.merge import run_three_way_merge
+from ..utils.merge import MergeResult, run_three_way_merge
 from ..utils.template import (
     get_available_agents,
     get_available_base_templates,
@@ -267,9 +268,8 @@ def _execute_with_saved_config(
                 f"❌ Failed to execute with locked version {project_version}: {e}",
                 style="bold red",
             )
-            console.print(
-                "⚠️  Continuing with current version, but compatibility is not guaranteed",
-                style="yellow",
+            logging.warning(
+                "Continuing with current version, but compatibility is not guaranteed"
             )
         else:
             console.print(
@@ -286,6 +286,7 @@ def check_and_execute_with_saved_config(
     cli_overrides: dict[str, Any] | None = None,
     force: bool = False,
     dry_run: bool = False,
+    migrated_base_template: str | None = None,
 ) -> bool | dict[str, Any]:
     """Check for saved config and offer to reuse it.
 
@@ -300,6 +301,7 @@ def check_and_execute_with_saved_config(
         cli_overrides: CLI args to pass through (e.g., cicd_runner from original command)
         force: If True, include --force in subprocess args (skipped for old versions)
         dry_run: If True, include --dry-run in subprocess args (skipped for old versions)
+        migrated_base_template: Resolved ``adk@<name>`` URL, recorded before the subprocess
 
     Returns:
         True if config was used and executed successfully.
@@ -313,6 +315,8 @@ def check_and_execute_with_saved_config(
     project_config = find_project_config(project_dir)
     if not project_config:
         return False
+    if migrated_base_template:
+        project_config.base_template = migrated_base_template
 
     display_params = get_display_params_from_config(project_config)
     if not display_params:
@@ -354,6 +358,8 @@ def check_and_execute_with_saved_config(
             args.append("--force")
         if dry_run:
             args.append("--dry-run")
+    if migrated_base_template:
+        adk_shortcut.record_migrated_base_template(project_dir, migrated_base_template)
     return _execute_with_saved_config(args, project_version, use_different_version)
 
 
@@ -714,6 +720,7 @@ def _run_smart_merge(
     mode: InteractionMode,
     dry_run: bool,
     prefer_new: bool = False,
+    migrated_base_template: str | None = None,
 ) -> bool:
     """Run smart-merge using 3-way comparison.
 
@@ -728,6 +735,7 @@ def _run_smart_merge(
         mode: Interaction mode controlling backup, confirm and conflict prompts
         dry_run: If True, preview changes without applying
         prefer_new: If True, resolve conflicts in favor of new template
+        migrated_base_template: Resolved ``adk@<name>`` URL to record once applied
 
     Returns:
         True if smart-merge completed successfully, False otherwise
@@ -752,43 +760,38 @@ def _run_smart_merge(
     def _update_metadata(
         proj_dir: pathlib.Path, lang: str, *, stamp_version: bool = True
     ) -> None:
-        if not cli_overrides:
+        metadata_updates: dict[str, Any] = {}
+        stale_keys: list[str] = []
+        # Without overrides only a migrated base_template is recorded; target-
+        # derived stale keys would otherwise rewrite every agent_runtime manifest.
+        if cli_overrides:
+            metadata_updates = _metadata_updates_from_overrides(cli_overrides)
+            effective_deployment = cli_overrides.get(
+                "deployment_target", project_config.deployment_target
+            )
+            if "session_type" in metadata_updates and effective_deployment not in (
+                "cloud_run",
+                "gke",
+            ):
+                # create renders in-memory sessions outside cloud_run/gke; record
+                # that so later runs don't replay (and re-warn about) the ignored value.
+                metadata_updates["session_type"] = "in_memory"
+            stale_keys = _stale_manifest_keys_for_target(cli_overrides, project_config)
+        if not (metadata_updates or stale_keys or migrated_base_template):
             return
-        metadata_updates: dict[str, Any] = {
-            k: v
-            for k, v in cli_overrides.items()
-            if isinstance(v, str)
-            and (k == "deployment_target" or not _should_skip_config_value(v))
-        }
-        # agent_gateway is a bool, so it needs recording separately: the
-        # comprehension above only keeps strings (which keeps non-create_params
-        # overrides such as ``prototype`` out of the manifest).
-        if "agent_gateway" in cli_overrides:
-            metadata_updates["agent_gateway"] = cli_overrides["agent_gateway"]
-        effective_deployment = cli_overrides.get(
-            "deployment_target", project_config.deployment_target
-        )
-        if "session_type" in metadata_updates and effective_deployment not in (
-            "cloud_run",
-            "gke",
-        ):
-            # create renders in-memory sessions outside cloud_run/gke; record
-            # that so later runs don't replay (and re-warn about) the ignored value.
-            metadata_updates["session_type"] = "in_memory"
-        stale_keys = _stale_manifest_keys_for_target(cli_overrides, project_config)
-
-        if (metadata_updates or stale_keys) and update_acli_metadata(
+        if update_acli_metadata(
             proj_dir,
             metadata_updates,
             acli_version=get_current_version() if stamp_version else None,
             remove_keys=stale_keys or None,
+            base_template=migrated_base_template,
         ):
             console.print("Recorded changes to agents-cli-manifest.yaml.")
 
     def _update_metadata_only(proj_dir: pathlib.Path, lang: str) -> None:
         _update_metadata(proj_dir, lang, stamp_version=False)
 
-    return run_three_way_merge(
+    result = run_three_way_merge(
         project_dir=project_dir,
         project_name=project_name,
         agent_directory=agent_directory,
@@ -803,6 +806,7 @@ def _run_smart_merge(
         post_apply_hook=_update_metadata,
         post_apply_no_changes_hook=_update_metadata_only,
     )
+    return result is MergeResult.DONE
 
 
 @click.command()
@@ -948,7 +952,13 @@ def enhance(
         )
         return
 
+    # Before the saved-config replay and smart-merge, which re-apply the
+    # recorded template and would otherwise ignore a typed adk@ silently.
+    template_spec = _template_spec(template_path)
+    adk_shortcut.reject_adk_shortcut(template_spec)
+
     if base_template and not validate_base_template(base_template):
+        adk_shortcut.reject_adk_shortcut(base_template)
         hint = (
             f"  To apply a fetched template, pass it positionally: agents-cli scaffold enhance {base_template}"
             if remote_template.is_template_spec(base_template)
@@ -958,8 +968,23 @@ def enhance(
             f"--base-template takes a template this CLI ships, not '{base_template}'.\n{hint}"
         )
 
+    # Resolve a recorded adk@<name> in memory; it reaches the manifest only once
+    # applied, or before the saved-config subprocess. Skip it when --force
+    # applies a template the user named: the recorded one goes unused and may
+    # be a removed recipe.
+    replaces_recorded_template = force and (
+        template_path != pathlib.Path(".") or bool(base_template) or adk
+    )
+    project_config = find_project_config(current_dir)
+    migrated_base_template: str | None = None
+    if project_config and not replaces_recorded_template:
+        migrated_base_template = adk_shortcut.resolve_recorded_adk_shortcut(
+            project_config.base_template
+        )
+        if migrated_base_template:
+            project_config.base_template = migrated_base_template
+
     if not force and not is_saved_config_subprocess:
-        project_config = find_project_config(current_dir)
         if project_config:
             # Determine overrides source: CLI flags or interactive customize
             overrides: dict[str, Any] | None = None
@@ -972,6 +997,7 @@ def enhance(
                     mode=mode,
                     cli_overrides=cli_override_args,
                     dry_run=dry_run,
+                    migrated_base_template=migrated_base_template,
                 )
                 if saved_config_result is True:
                     return  # "y" → subprocess executed
@@ -995,6 +1021,7 @@ def enhance(
                     project_dir=current_dir,
                     mode=mode,
                     cli_overrides=cli_override_args,
+                    migrated_base_template=migrated_base_template,
                 ):
                     return
 
@@ -1008,12 +1035,11 @@ def enhance(
                 mode=mode,
                 dry_run=dry_run,
                 prefer_new=prefer_new,
+                migrated_base_template=migrated_base_template,
             ):
                 return
             # If smart-merge returned False, fall through to brute-force
-            console.print(
-                "[yellow]⚠️  Smart-merge failed, falling back to standard mode.[/yellow]"
-            )
+            logging.warning("Smart-merge failed, falling back to standard mode.")
         elif dry_run:
             console.print(
                 "[bold red]Error:[/bold red] --dry-run requires saved project metadata "
@@ -1033,6 +1059,7 @@ def enhance(
                 mode=mode,
                 cli_overrides=cli_override_args,
                 force=force,
+                migrated_base_template=migrated_base_template,
             )
             if saved_config_result is True:
                 return
@@ -1055,16 +1082,16 @@ def enhance(
 
     # Setup debug logging if enabled
     if debug:
-        logging.basicConfig(level=logging.DEBUG, force=True)
+        configure_logging(logging.DEBUG)
         console.print("> Debug mode enabled")
         logging.debug("Starting enhance command in debug mode")
 
     # Default cicd_runner to "skip" for non-interactive invocation
     if not interactive and not cicd_runner:
         if auto_approve:
-            console.print(
-                "[yellow]Warning: --cicd-runner not specified with --auto-approve. "
-                "Defaulting to 'skip'. Use --cicd-runner to configure CI/CD.[/yellow]"
+            logging.warning(
+                "--cicd-runner not specified with --auto-approve. "
+                "Defaulting to 'skip'. Use --cicd-runner to configure CI/CD."
             )
         cicd_runner = "skip"
 
@@ -1123,7 +1150,7 @@ def enhance(
         agent_spec = f"local@{template_path.resolve()}"
     else:
         # Assume it's an agent name or remote spec
-        agent_spec = str(template_path)
+        agent_spec = template_spec
 
     # Show base template inheritance info early for local projects
     if agent_spec.startswith("local@"):
@@ -1358,7 +1385,7 @@ def enhance(
                         f"✅ Found '{required_var}' definition in {agent_file.name}"
                     )
                 else:
-                    console.print(f"⚠️  [yellow]{error_msg}[/yellow]")
+                    logging.warning("%s", error_msg)
                     console.print(
                         "   This variable should contain your main agent instance for deployment."
                     )
@@ -1379,8 +1406,8 @@ def enhance(
             else:
                 # No agent file found - suggest creating one
                 expected_file = lang_config.get("agent_file", "agent.py")
-                console.print(
-                    f"⚠️  [yellow]Warning: {expected_file} not found in {final_agent_directory}/[/yellow]"
+                logging.warning(
+                    "%s not found in %s/", expected_file, final_agent_directory
                 )
                 console.print(
                     f"   Create {final_agent_directory}/{expected_file} with your agent logic"
@@ -1424,7 +1451,17 @@ def enhance(
 
     # Read before the render: create rewrites the manifest in place.
     existing_config = find_project_config(pathlib.Path.cwd())
-    recorded_base = existing_config.base_template if existing_config else None
+    if replaces_recorded_template:
+        recorded_base = (
+            agent_spec
+            if template_path != pathlib.Path(".")
+            and remote_template.is_template_spec(agent_spec)
+            else base_template
+        )
+    else:
+        recorded_base = migrated_base_template or (
+            existing_config.base_template if existing_config else None
+        )
 
     # Call the create command with in-folder mode enabled
     ctx.invoke(
@@ -1463,3 +1500,27 @@ def enhance(
     # from the recorded spec and still has to re-fetch it next time.
     if recorded_base and remote_template.is_template_spec(recorded_base):
         update_acli_metadata(pathlib.Path.cwd(), {}, base_template=recorded_base)
+
+
+def _template_spec(template_path: pathlib.Path) -> str:
+    """TEMPLATE_PATH as typed.
+
+    pathlib turns ``https://`` into ``https:/``, and ``/`` into ``\\`` on Windows.
+    """
+    return re.sub(r"^([a-zA-Z][\w+.-]+):/(?!/)", r"\1://", template_path.as_posix())
+
+
+def _metadata_updates_from_overrides(cli_overrides: dict[str, Any]) -> dict[str, Any]:
+    """Return the create_params values from enhance overrides worth recording."""
+    metadata_updates: dict[str, Any] = {
+        k: v
+        for k, v in cli_overrides.items()
+        if isinstance(v, str)
+        and (k == "deployment_target" or not _should_skip_config_value(v))
+    }
+    # agent_gateway is a bool, so it needs recording separately: the
+    # comprehension above only keeps strings (which keeps non-create_params
+    # overrides such as ``prototype`` out of the manifest).
+    if "agent_gateway" in cli_overrides:
+        metadata_updates["agent_gateway"] = cli_overrides["agent_gateway"]
+    return metadata_updates

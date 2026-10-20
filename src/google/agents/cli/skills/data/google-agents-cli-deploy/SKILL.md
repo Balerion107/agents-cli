@@ -13,7 +13,7 @@ description: >
 metadata:
   author: Google
   license: Apache-2.0
-  version: 1.10.0
+  version: 1.11.0
   requires:
     bins:
       - agents-cli
@@ -399,7 +399,7 @@ so the image must trust the gateway's root CA. That setup is opt-in at scaffold 
 creating a new project, pass `--agent-gateway` flag to `agents-cli create`:
 
 ```bash
-agents-cli create my-agent -d agent_runtime --agent-gateway
+agents-cli create my-agent --agent adk -d agent_runtime --agent-gateway
 ```
 
 Alternatively, you can pass the same flag to `agents-cli scaffold enhance` to upgrade an

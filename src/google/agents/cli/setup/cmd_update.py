@@ -39,7 +39,7 @@ def cmd_update(workspace, auto_approve):
     if not workspace:
         args.append("-g")
 
-    run_npx_skills(args, "Updating skills")
+    run_npx_skills(args)
 
     # Temporary until npx skills supports Antigravity's IDE / CLI / 2.0 paths:
     # refresh the mirrored skill links so the IDE/2.0 and CLI see the update.

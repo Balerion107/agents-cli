@@ -34,6 +34,7 @@ from google.agents.cli._project import (
     require_agent_directory,
 )
 from google.agents.cli._runner import run
+from google.agents.cli._uv_index import sync_failure_message, uv_index_env
 from google.agents.cli.eval import _paths
 
 _SYNTHESIZE_TIMEOUT = 600  # 10 minutes
@@ -179,10 +180,12 @@ def cmd_synthesize(
     )
 
     console.print("[bold]Syncing eval dependencies...[/bold]")
+    uv_env = uv_index_env(project_root)
     run(
         ["uv", "sync", "--dev", "--extra", "eval"],
         cwd=str(project_root),
-        check_err_msg="Failed to sync eval dependencies",
+        env=uv_env,
+        check_err_msg=sync_failure_message("Failed to sync eval dependencies", uv_env),
     )
 
     config_json = json.dumps(config)
@@ -213,6 +216,7 @@ def cmd_synthesize(
                     str(max_turns),
                 ],
                 cwd=str(project_root),
+                env=uv_env,
                 check_err_msg="Trace synthesis failed",
                 timeout=_SYNTHESIZE_TIMEOUT,
             )
@@ -227,18 +231,12 @@ def cmd_synthesize(
             try:
                 shutil.rmtree(stage_dir)
             except OSError as exc:
-                console.print(
-                    f"[yellow]Warning:[/yellow] could not clean up stage dir "
-                    f"{stage_dir}: {exc}"
-                )
+                logging.warning("Could not clean up stage dir %s: %s", stage_dir, exc)
         else:
             try:
                 script_path.unlink()
             except OSError as exc:
-                console.print(
-                    f"[yellow]Warning:[/yellow] could not remove staged script "
-                    f"{script_path}: {exc}"
-                )
+                logging.warning("Could not remove staged script %s: %s", script_path, exc)
 
     console.print(f"[bold green]Traces saved to:[/bold green] {output_path}")
 

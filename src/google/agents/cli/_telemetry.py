@@ -328,10 +328,11 @@ def _warm_up() -> tuple[str, str] | None:
     try:
         import os
 
-        import google.auth
         from google.auth.transport.requests import Request
 
-        credentials, adc_project = google.auth.default(
+        from google.agents.cli.auth import default_credentials
+
+        credentials, adc_project = default_credentials(
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
         project = os.environ.get("GOOGLE_CLOUD_PROJECT") or adc_project

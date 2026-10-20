@@ -18,7 +18,7 @@ settings:
   requires_session: true
   deployment_targets: ["agent_runtime", "cloud_run", "gke", "none"]
   extra_dependencies:
-    - "google-adk[gcp,otel-gcp,bigquery-analytics]>=2.9.2,<3.0.0"
+    - "google-adk[gcp,otel-gcp,bigquery-analytics]>=2.12.0,<3.0.0"
     # opentelemetry-resourcedetector-gcp 1.13.0 (its only non-prerelease) is yanked
     # ("breaks imports"). ADK caps gcp-logging at <=1.12.0a0 but leaves
     # resourcedetector at <2, so the resolver reaches the broken build (or fails
@@ -37,7 +37,7 @@ settings:
   # Kept out of `extra_dependencies` so a plain `uv sync` stays lean.
   extra_optional_dependencies:
     eval:
-      - "google-adk[eval]>=2.9.2,<3.0.0"
+      - "google-adk[eval]>=2.12.0,<3.0.0"
   tags: ["adk", "a2a"]
   frontend_type: "None"
 

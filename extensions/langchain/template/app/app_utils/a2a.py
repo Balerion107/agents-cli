@@ -88,6 +88,7 @@ class LangGraphAgentExecutor(AgentExecutor):
         with _tracer.start_as_current_span("invoke_agent"):
             async for mode, data in root_agent.astream(
                 {"messages": [{"role": "user", "content": user_input}]},
+                config={"configurable": {"thread_id": task.context_id}},
                 stream_mode=["messages", "values"],
             ):
                 if mode == "messages":

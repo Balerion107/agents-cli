@@ -43,6 +43,13 @@ NESTED_CREATE_PARAMS = {
     "agent_runtime_identity_default": ("agent_runtime", "identity_default"),
 }
 
+# The create commands shown when a command runs outside a project, indented to
+# sit under a "create a project first:" line.
+CREATE_PROJECT_HINT = (
+    "    agents-cli create my-agent -i    # choose options in prompts\n"
+    "    agents-cli create my-agent -y    # accept the defaults (adk template, agent_runtime target)"
+)
+
 
 @dataclass
 class ProjectConfig:
@@ -146,16 +153,9 @@ def _warn_legacy_config() -> None:
     """Warn about legacy configuration once."""
     global _WARNED_LEGACY_CONFIG
     if not _WARNED_LEGACY_CONFIG:
-        click.secho(
-            "\n⚠️  Legacy configuration detected in pyproject.toml.",
-            fg="yellow",
-            bold=True,
-            err=True,
-        )
-        click.secho(
-            "   Run `agents-cli scaffold upgrade` to migrate to agents-cli-manifest.yaml.\n",
-            fg="yellow",
-            err=True,
+        logging.warning(
+            "Legacy configuration detected in pyproject.toml. Run "
+            "`agents-cli scaffold upgrade` to migrate to agents-cli-manifest.yaml."
         )
         _WARNED_LEGACY_CONFIG = True
 
@@ -257,18 +257,19 @@ def check_cli_version(cfg: ProjectConfig) -> None:
         return
 
     if cli_ver < project_ver:
-        click.echo(
-            f"\n⚠️  Version mismatch: project was scaffolded with agents-cli {acli_version},"
-            f" running {__version__}.\n"
-            f"   Upgrade the CLI: uv tool install google-agents-cli@{acli_version}\n",
-            err=True,
+        logging.warning(
+            "Version mismatch: project was scaffolded with agents-cli %s, running "
+            "%s. Upgrade the CLI: uv tool install google-agents-cli@%s",
+            acli_version,
+            __version__,
+            acli_version,
         )
     elif cli_ver > project_ver:
-        click.echo(
-            f"\n⚠️  Version mismatch: project was scaffolded with agents-cli {acli_version},"
-            f" running {__version__}.\n"
-            "   Upgrade the project: agents-cli scaffold upgrade\n",
-            err=True,
+        logging.warning(
+            "Version mismatch: project was scaffolded with agents-cli %s, running "
+            "%s. Upgrade the project: agents-cli scaffold upgrade",
+            acli_version,
+            __version__,
         )
 
 
@@ -351,7 +352,7 @@ def chdir_project_root(dir: Path | None = None) -> None:
         raise click.ClickException(
             "No agents-cli-manifest.yaml found in the current directory or its parents.\n"
             "  Run this command from your project root, or create a project first:\n"
-            "    agents-cli create my-agent"
+            f"{CREATE_PROJECT_HINT}"
         )
     # Only announce the root when we actually move (i.e. run from a subdir).
     if root.resolve() != Path.cwd().resolve():

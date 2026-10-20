@@ -24,7 +24,6 @@ import datetime
 import logging
 import os
 import re
-import urllib.parse
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -51,6 +50,7 @@ from google.agents.cli._project import (
     scaffold_older_than,
 )
 from google.agents.cli._remote import build_agent_runtime_passthrough_url
+from google.agents.cli.deploy import _build_logs
 from google.agents.cli.deploy._operation import (
     METADATA_FILE,
     METADATA_LOCK_FILE,
@@ -59,6 +59,7 @@ from google.agents.cli.deploy._operation import (
     clear_operation,
     complete_operation,
     is_starting_claim_stale,
+    parse_started_at,
     read_operation,
     read_remote_agent_runtime_id,
     write_operation,
@@ -131,6 +132,22 @@ _AG_INGRESS_UPDATE_MASK_PATH = f"{_AG_UPDATE_MASK_PATH}.client_to_agent_config"
 # before it never shipped a Dockerfile, so a missing one means the project
 # predates the container model.
 _CONTAINER_RUNTIME_VERSION = "0.6.0"
+
+# The generated reasoning_engine adapter serves agentplatform.frameworks.adk.AdkApp
+# from this release. Older adapters wrap the 1.x AdkApp, which has no artifact
+# operations and answers them with 404, so those projects don't advertise them.
+_ADK_ARTIFACT_METHODS_VERSION = "1.11.0"
+_ADK_ARTIFACT_METHODS = frozenset(
+    {
+        "async_save_artifact",
+        "async_load_artifact",
+        "async_list_artifact_keys",
+        "async_list_artifact_versions",
+        "async_get_artifact_version",
+        "async_delete_artifact",
+        "async_list_versions",
+    }
+)
 
 
 # Always ignored, mirroring gcloud's generated .gcloudignore defaults.
@@ -552,7 +569,17 @@ def deploy_agent_runtime(
             class_methods_builder = dispatch_language(
                 "deploy", CLASS_METHODS_BUILDERS, cfg.language
             )
-            config_kwargs["class_methods"] = class_methods_builder()
+            class_methods = class_methods_builder()
+            if scaffold_older_than(cfg, _ADK_ARTIFACT_METHODS_VERSION):
+                class_methods = [
+                    m for m in class_methods if m["name"] not in _ADK_ARTIFACT_METHODS
+                ]
+                logging.info(
+                    "Skipping artifact methods: this project was scaffolded with "
+                    "agents-cli %s. Run `agents-cli scaffold upgrade` to enable them.",
+                    cfg.acli_version,
+                )
+            config_kwargs["class_methods"] = class_methods
 
         if psc_interface_config is not None:
             config_kwargs["psc_interface_config"] = psc_interface_config
@@ -668,6 +695,7 @@ def deploy_agent_runtime(
         click.echo(f"\n🚀 {action} agent: {display_name} ({wait_note})...")
 
         claim.mark_mutation_started()
+        started_at = datetime.datetime.now(tz=datetime.UTC)
         operation_name = _start_and_record_operation(
             client=client,
             matching_agents=matching_agents,
@@ -696,7 +724,14 @@ def deploy_agent_runtime(
         if completed_op.error:
             claim.completed = True
             clear_operation(owner_id=claim.owner_id)
-            raise click.ClickException(f"Deployment failed: {completed_op.error}")
+            raise click.ClickException(
+                _deployment_failed_message(
+                    completed_op.error,
+                    operation_name=operation_name,
+                    project=project,
+                    started_at=started_at,
+                )
+            )
 
         # Retrieve the newly created/updated Agent Runtime agent using the public client.runtimes.get()
         # to ensure all fields (including the api_resource name) are fully loaded and populated.
@@ -772,7 +807,14 @@ def check_agent_runtime_operation(
     if operation.done:
         if operation.error:
             clear_operation(owner_id=owner_id)
-            raise click.ClickException(f"Deployment failed: {operation.error}")
+            raise click.ClickException(
+                _deployment_failed_message(
+                    operation.error,
+                    operation_name=operation_name,
+                    project=project,
+                    started_at=parse_started_at(started_at),
+                )
+            )
 
         # Retrieve the newly created/updated Agent Runtime agent using the public client.runtimes.get()
         # to ensure all fields (including the api_resource name) are fully loaded and populated.
@@ -784,8 +826,8 @@ def check_agent_runtime_operation(
         clear_operation(owner_id=owner_id)
     else:
         elapsed = ""
-        if started_at:
-            start = datetime.datetime.fromisoformat(started_at)
+        start = parse_started_at(started_at)
+        if start is not None:
             delta = datetime.datetime.now(tz=datetime.UTC) - start
             minutes = int(delta.total_seconds() // 60)
             seconds = int(delta.total_seconds() % 60)
@@ -1193,7 +1235,7 @@ def _adk_python_class_methods() -> list[dict[str, str]]:
 
     Required to query the agent using the Gemini platform SDK after deployment.
     """
-    from vertexai.agent_engines.templates.adk import AdkApp
+    from agentplatform.frameworks.adk import AdkApp
 
     # register_operations returns the same, hardcoded list for any instance of AdkApp
     # so we can just use object.__new__ to create a dummy instance.
@@ -1437,12 +1479,37 @@ def _start_and_record_operation(
 
 def build_agent_engine_logs_url(operation_name: str, project: str) -> str:
     """Build a Logs Explorer URL for the engine's logs, keyed off the LRO name."""
-    engine_id = _get_resource_name_from_operation(operation_name).split("/")[-1]
-    query = f'resource.labels.reasoning_engine_id="{engine_id}"'
-    encoded = urllib.parse.quote(query, safe="")
-    return (
-        f"https://console.cloud.google.com/logs/query;query={encoded}?project={project}"
+    return _build_logs.engine_logs_url(
+        project=project, engine_id=_engine_id_from_operation(operation_name)
     )
+
+
+def _deployment_failed_message(
+    error: Any,
+    *,
+    operation_name: str,
+    project: str,
+    started_at: datetime.datetime | None,
+) -> str:
+    """The error for a failed deploy operation.
+
+    A remote build failure only reports a generic "Build failed", so append the
+    tail of the build log, which holds the real cause.
+    """
+    message = f"Deployment failed: {error}"
+    if not _build_logs.is_build_failure(error):
+        return message
+    details = _build_logs.build_log_details(
+        project=project,
+        engine_id=_engine_id_from_operation(operation_name),
+        started_at=started_at,
+    )
+    return f"{message}\n\n{details}"
+
+
+def _engine_id_from_operation(operation_name: str) -> str:
+    """The ReasoningEngine ID (last path segment) from a long-running operation name."""
+    return _get_resource_name_from_operation(operation_name).split("/")[-1]
 
 
 def _get_resource_name_from_operation(operation_name: str) -> str:

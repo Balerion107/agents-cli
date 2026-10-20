@@ -14,6 +14,7 @@
 
 """agents-cli setup command — install skills via npx skills CLI."""
 
+import logging
 import random
 import shlex
 import shutil
@@ -145,12 +146,12 @@ def _install_skills(remote_source, *, workspace, agent, allow_fallback):
 
     # Remote (or explicitly requested) source
     try:
-        run_npx_skills(args, "Installing skills")
+        run_npx_skills(args)
         return None
     except click.ClickException:
         if bundled_dir is None:
             raise
-        click.secho(f"  Could not install skills from {remote_source}.", fg="yellow")
+        logging.warning("Could not install skills from %s.", remote_source)
         click.secho("  Falling back to the skills bundled with this CLI.", dim=True)
 
     # Bundled skills via npx (skips a redundant identical run)
@@ -159,18 +160,18 @@ def _install_skills(remote_source, *, workspace, agent, allow_fallback):
             str(bundled_dir), workspace=workspace, agent=agent
         )
         try:
-            run_npx_skills(local_args, "Installing bundled skills")
+            run_npx_skills(local_args)
             return None
         except click.ClickException:
-            click.secho("  Could not install bundled skills via npx skills.", fg="yellow")
+            logging.warning("Could not install bundled skills via npx skills.")
 
     # Copy the bundled skills directly (no npx / git needed)
     dest_root = _skills_store_dir(workspace=workspace)
     copied = _copy_bundled_skills(bundled_dir, dest_root)
-    click.secho(
-        f"  ⚠️  Installed {copied} skills by copying them into {_display_path(dest_root)} "
-        "(npx skills was unavailable).",
-        fg="yellow",
+    logging.warning(
+        "Installed %s skills by copying them into %s (npx skills was unavailable).",
+        copied,
+        _display_path(dest_root),
     )
     click.secho(
         "     'agents-cli update' may not manage these copied skills; re-run "
@@ -209,13 +210,10 @@ def _check_legacy_skills():
                 found_legacy.append(name)
 
         if found_legacy:
-            click.secho(
-                f"\n⚠️  Warning: Found legacy ADK skills installed: {', '.join(found_legacy)}",
-                fg="yellow",
-            )
-            click.secho(
-                "     These may conflict with the new `agents-cli` skills.",
-                fg="yellow",
+            logging.warning(
+                "Found legacy ADK skills installed: %s. "
+                "These may conflict with the new `agents-cli` skills.",
+                ", ".join(found_legacy),
             )
             click.secho(
                 "     We suggest you uninstall them to avoid confusion, e.g.:",
@@ -430,7 +428,7 @@ def cmd_setup(*, workspace, skip_auth, dry_run, dev, interactive, skills_source,
             click.secho("  Already installed and up to date.", dim=True)
         cli_installed = True
     elif result.returncode != 0:
-        click.secho("  Could not install agents-cli automatically.", fg="yellow")
+        logging.warning("Could not install agents-cli automatically.")
         if stderr.strip():
             for line in stderr.strip().splitlines():
                 click.echo(f"  {line}")

@@ -354,8 +354,7 @@ def _copy_dir(
             dst.mkdir(parents=True)
             logging.debug("Created directory: '%s'", dst)
         except OSError as e:
-            logging.error("Failed to create directory: %s", dst)
-            logging.error("Error: %s", e)
+            logging.error("Failed to create directory %s: %s", dst, e)
             raise
 
     for item in src.iterdir():

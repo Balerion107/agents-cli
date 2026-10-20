@@ -409,10 +409,11 @@ def _run_cases(
 
     if failures:
         _print_failure_summary(failures, n_cases, n_succeeded)
-        click.echo(
-            f"Artifact contains only the {n_succeeded} successful "
-            f"case(s); {len(failures)} failed case(s) were dropped.",
-            err=True,
+        logging.warning(
+            "Artifact contains only the %d successful case(s); %d failed case(s) "
+            "were dropped.",
+            n_succeeded,
+            len(failures),
         )
 
 

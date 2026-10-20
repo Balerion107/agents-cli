@@ -15,10 +15,23 @@
 // Package sessions builds the process-wide ADK session service for the chosen backend.
 package sessions
 
+{# Only the selected backend is rendered, so the other backends' dependencies
+   (e.g. the PostgreSQL driver) are not linked into the binary. -#}
 import (
+{%- if cookiecutter.session_type == "cloud_sql" %}
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"time"
+
+	"gorm.io/driver/postgres"
+
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/session/database"
+{%- elif cookiecutter.session_type == "agent_platform_sessions" %}
+	"context"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -27,23 +40,22 @@ import (
 	"cloud.google.com/go/agentplatform/types"
 	"google.golang.org/api/option"
 	"google.golang.org/genai"
-	"gorm.io/driver/postgres"
 
 	"google.golang.org/adk/v2/session"
-	"google.golang.org/adk/v2/session/database"
 	"google.golang.org/adk/v2/session/vertexai"
+{%- else %}
+	"context"
+	"fmt"
+	"os"
+	"strings"
+
+	"google.golang.org/api/option"
+
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/session/vertexai"
+{%- endif %}
 )
-
-// sessionType is the backend selected at scaffold time.
-const sessionType = "{{cookiecutter.session_type}}"
-
-// defaultAgentRuntimeName is the display name used to find or create the managed
-// Agent Runtime that backs agent_platform_sessions.
-const defaultAgentRuntimeName = "{{cookiecutter.project_name}}"
-
-// defaultAgentRuntimeLocation is the region Agent Runtime sessions default to
-// when the agent itself is deployed elsewhere.
-const defaultAgentRuntimeLocation = "us-central1"
+{%- if cookiecutter.session_type == "cloud_sql" %}
 
 // dbConnectTimeout bounds how long cloudSQLSessionService waits for the database
 // to become reachable before giving up.
@@ -54,26 +66,8 @@ const dbConnectTimeout = 60 * time.Second
 const dbConnectRetryInterval = 2 * time.Second
 
 // NewService returns the ADK session service for the selected backend.
-func NewService(ctx context.Context) (session.Service, error) {
-	switch sessionType {
-	case "cloud_sql":
-		return cloudSQLSessionService()
-	case "agent_platform_sessions":
-		return agentPlatformSessions(ctx)
-	default:
-		engineID := os.Getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID")
-		if engineID == "" {
-			return session.InMemoryService(), nil
-		}
-		loc := agentRuntimeLocation()
-		// vertexService parses a full resource name; GOOGLE_CLOUD_AGENT_ENGINE_ID
-		// is a bare id, so build the full name from it.
-		name := fmt.Sprintf(
-			"projects/%s/locations/%s/reasoningEngines/%s",
-			os.Getenv("GOOGLE_CLOUD_PROJECT"), loc, engineID,
-		)
-		return vertexService(ctx, name)
-	}
+func NewService(_ context.Context) (session.Service, error) {
+	return cloudSQLSessionService()
 }
 
 // cloudSQLSessionService backs sessions with Cloud SQL when the connection is configured,
@@ -121,6 +115,16 @@ func openCloudSQL(dsn string) (session.Service, error) {
 	}
 	return svc, nil
 }
+{%- elif cookiecutter.session_type == "agent_platform_sessions" %}
+
+// defaultAgentRuntimeName is the display name used to find or create the managed
+// Agent Runtime that backs agent_platform_sessions.
+const defaultAgentRuntimeName = "{{cookiecutter.project_name}}"
+
+// NewService returns the ADK session service for the selected backend.
+func NewService(ctx context.Context) (session.Service, error) {
+	return agentPlatformSessions(ctx)
+}
 
 // agentPlatformSessions backs sessions with a managed Agent Runtime,
 // finding or creating one by display name.
@@ -141,28 +145,6 @@ func agentPlatformSessions(ctx context.Context) (session.Service, error) {
 	}
 
 	return vertexService(ctx, engineName)
-}
-
-// vertexService builds an ADK vertexai session service against an existing Agent Runtime.
-func vertexService(ctx context.Context, engineName string) (session.Service, error) {
-	parts := strings.Split(engineName, "/")
-	project := parts[1]
-	location := parts[3]
-	id := parts[5]
-
-	svc, err := vertexai.NewSessionService(
-		ctx,
-		vertexai.VertexAIServiceConfig{
-			ProjectID:       project,
-			Location:        location,
-			ReasoningEngine: id,
-		},
-		option.WithEndpoint(aiplatformEndpoint(location)),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create Agent Runtime session service: %w", err)
-	}
-	return svc, nil
 }
 
 // findOrCreateAgentRuntime returns the resource name of the Agent Runtime with
@@ -208,6 +190,51 @@ func findOrCreateAgentRuntime(ctx context.Context, project, location, displayNam
 	}
 	return op.Response.Name, nil
 }
+{%- else %}
+
+// NewService returns the ADK session service for the selected backend.
+func NewService(ctx context.Context) (session.Service, error) {
+	engineID := os.Getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID")
+	if engineID == "" {
+		return session.InMemoryService(), nil
+	}
+	loc := agentRuntimeLocation()
+	// vertexService parses a full resource name; GOOGLE_CLOUD_AGENT_ENGINE_ID
+	// is a bare id, so build the full name from it.
+	name := fmt.Sprintf(
+		"projects/%s/locations/%s/reasoningEngines/%s",
+		os.Getenv("GOOGLE_CLOUD_PROJECT"), loc, engineID,
+	)
+	return vertexService(ctx, name)
+}
+{%- endif %}
+{%- if cookiecutter.session_type != "cloud_sql" %}
+
+// defaultAgentRuntimeLocation is the region Agent Runtime sessions default to
+// when the agent itself is deployed elsewhere.
+const defaultAgentRuntimeLocation = "us-central1"
+
+// vertexService builds an ADK vertexai session service against an existing Agent Runtime.
+func vertexService(ctx context.Context, engineName string) (session.Service, error) {
+	parts := strings.Split(engineName, "/")
+	project := parts[1]
+	location := parts[3]
+	id := parts[5]
+
+	svc, err := vertexai.NewSessionService(
+		ctx,
+		vertexai.VertexAIServiceConfig{
+			ProjectID:       project,
+			Location:        location,
+			ReasoningEngine: id,
+		},
+		option.WithEndpoint(aiplatformEndpoint(location)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create Agent Runtime session service: %w", err)
+	}
+	return svc, nil
+}
 
 // agentRuntimeLocation resolves the region for Agent Runtime operations.
 //
@@ -226,6 +253,8 @@ func agentRuntimeLocation() string {
 func aiplatformEndpoint(location string) string {
 	return fmt.Sprintf("%s-aiplatform.googleapis.com:443", location)
 }
+{%- endif %}
+{%- if cookiecutter.session_type in ("cloud_sql", "agent_platform_sessions") %}
 
 // envOrDefault returns the value of the environment variable named key, or
 // fallback when it is unset or empty.
@@ -235,3 +264,4 @@ func envOrDefault(key, fallback string) string {
 	}
 	return fallback
 }
+{%- endif %}

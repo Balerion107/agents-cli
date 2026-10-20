@@ -40,6 +40,10 @@ from google.agents.cli.eval.eval_utils import (
 # enough to keep a judge that reuses its client busy, low enough that one
 # building a client per case still completes.
 DEFAULT_QPS = 15.0
+
+_GENAI_MODELS_LOGGER = "google_genai.models"
+_GENAI_AFC_ADVICE_PREFIX = "Direct use of automatic function calling"
+
 # Reused by `eval run`, which forwards the flag.
 qps_option = click.option(
     "--qps",
@@ -249,6 +253,9 @@ def cmd_grade(
             )
         else:
             client = AgentPlatformClient(project=None, location=None)
+        # The eval SDK's own model calls trigger google-genai's AFC advice,
+        # which users can't act on. Other google-genai records still show.
+        logging.getLogger(_GENAI_MODELS_LOGGER).addFilter(_drop_genai_afc_advice)
         result = client.evals.evaluate(
             dataset=merged_dataset,
             metrics=metrics,
@@ -264,3 +271,7 @@ def cmd_grade(
         raise
     except Exception as e:
         raise click.ClickException("Evaluation failed.") from e
+
+
+def _drop_genai_afc_advice(record: logging.LogRecord) -> bool:
+    return not record.getMessage().startswith(_GENAI_AFC_ADVICE_PREFIX)

@@ -23,6 +23,7 @@ A few things this makes possible:
 An extension contributes two things:
 
 - **Command overrides** — the extension maps a command name to a `run:` vector. When you invoke the command, `agents-cli` runs that vector (no shell) with your arguments appended.
+    - `info`, `login`, `setup`, `update`, `install` and the `extension` commands can't be overridden. They always run the built-in, so you can inspect, set up or repair `agents-cli` in a repo you don't trust yet.
 - **Skills** — directories with a `SKILL.md`. `extension add` copies them into the skills folder: `<project>/.agents/skills/` at project scope, or `~/.agents/skills/` with `--global`.
     - A skill folder that an extension copied belongs to the extension. `extension add`, `extension update` and `agents-cli install` replace the whole folder, so your own files there are lost.
         - To change a skill, copy its folder under a new name. The copy is yours: `agents-cli` never replaces or deletes it.

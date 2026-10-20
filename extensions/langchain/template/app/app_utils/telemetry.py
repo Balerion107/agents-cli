@@ -98,9 +98,11 @@ def _install_instrumentation() -> None:
     except Exception as e:  # pragma: no cover - optional dependency
         logging.warning("google-genai instrumentation unavailable: %s", e)
     try:
-        from opentelemetry.instrumentation.langchain import LangchainInstrumentor
+        from opentelemetry.instrumentation.genai.langchain import (
+            LangChainInstrumentor,
+        )
 
-        LangchainInstrumentor().instrument()
+        LangChainInstrumentor().instrument()
     except Exception as e:  # pragma: no cover - optional dependency
         logging.warning("LangChain instrumentation unavailable: %s", e)
 

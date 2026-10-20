@@ -123,6 +123,8 @@ resource "google_service_account_iam_member" "workload_identity_binding" {
   service_account_id = google_service_account.app_sa[each.key].name
   role               = "roles/iam.workloadIdentityUser"
   member             = "serviceAccount:${each.value}.svc.id.goog[${var.project_name}/${var.project_name}]"
+
+  depends_on = [google_container_cluster.app]
 }
 {% endif %}
 

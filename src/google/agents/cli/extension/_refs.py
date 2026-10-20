@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import urlsplit
 
 FIRST_PARTY_REPO = "google/agents-cli"
@@ -56,8 +56,32 @@ class ExtensionRef:
 def _split_selector(value: str) -> tuple[str, str | None]:
     if "#" in value:
         base, selector = value.split("#", 1)
+        if selector:
+            _check_selector(selector)
         return base, (selector or None)
     return value, None
+
+
+def _check_selector(selector: str) -> None:
+    """Reject a selector that would point outside the source it selects from.
+
+    The resolver joins the selector onto the checkout with pathlib, where an
+    absolute selector replaces the checkout entirely and `..` climbs out of it.
+    Either would vendor a directory the ref's kind, pin and trust decision do not
+    describe: `langchain#/tmp/x` would install /tmp/x as first-party, unprompted.
+    """
+    if (
+        not PurePosixPath(selector).parts
+        or "\\" in selector
+        or PurePosixPath(selector).is_absolute()
+        or PureWindowsPath(selector).drive
+        or ".." in PurePosixPath(selector).parts
+    ):
+        raise RefParseError(
+            f"invalid extension selector {selector!r}: use a relative path inside "
+            "the source, with '/' separators and no '..', e.g. 'soc2' or "
+            "'extensions/soc2'."
+        )
 
 
 def _as_git_url(base: str) -> str | None:
@@ -156,13 +180,18 @@ def parse_ref(raw: str, *, ref_override: str | None = None) -> ExtensionRef:
         )
 
     # First-party shorthand: a bare name selects that extension from the
-    # first-party repo (google/agents-cli).
+    # first-party repo (google/agents-cli). The name becomes the selector, so it
+    # needs the same check: `..` or `C:\tmp\evil` has no `/` to make it a repo.
+    # Checked even when a `#selector` replaces it, so a junk name is not
+    # silently recorded as a trusted first-party source.
+    _check_selector(base)
+    selector = selector or base
     return ExtensionRef(
         raw=raw,
         kind="first_party",
         repo=FIRST_PARTY_REPO,
         url=None,
         local_path=None,
-        selector=selector or base,
+        selector=selector,
         ref=ref_override,
     )

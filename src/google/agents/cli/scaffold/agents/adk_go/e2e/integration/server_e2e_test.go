@@ -23,6 +23,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -37,12 +39,20 @@ const (
 	healthCheckURL = baseURL + "/list-apps"
 )
 
-// startServer starts the Go server using subprocess.
-// Environment variables are loaded from .env via init() in test_helpers.go
-// and passed to the subprocess via os.Environ().
+// startServer builds the Go server and starts it as a subprocess.
 // Server starts with A2A protocol support.
 func startServer(t *testing.T) *exec.Cmd {
-	cmd := exec.Command("go", "run", ".", "web", "--port", "8000",
+	bin := filepath.Join(t.TempDir(), "agent")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	build := exec.Command("go", "build", "-o", bin, ".")
+	build.Dir = "../../" // Go to project root
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("Failed to build server: %v\n%s", err, out)
+	}
+
+	cmd := exec.Command(bin, "web", "--port", "8000",
 		"api", "-path_prefix", "/", "a2a", "appinfo")
 	cmd.Dir = "../../" // Go to project root
 	cmd.Env = append(os.Environ(), "INTEGRATION_TEST=TRUE")

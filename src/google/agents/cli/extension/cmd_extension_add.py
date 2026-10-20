@@ -107,7 +107,7 @@ def _check_compat(spec: ExtensionSpec | None) -> None:
 
 
 def _check_reserved_commands(spec: ExtensionSpec | None) -> None:
-    """Refuse an extension that claims a command used to repair extensions.
+    """Refuse an extension that claims a reserved command (see RECOVERY_COMMANDS).
 
     Caught at install because that is where a human can read why. The loader
     ignores such a claim too, for manifests edited by hand.
@@ -118,8 +118,8 @@ def _check_reserved_commands(spec: ExtensionSpec | None) -> None:
     if reserved:
         raise click.ClickException(
             f"Extension claims {', '.join(repr(r) for r in reserved)}, which "
-            "cannot be overridden: these are how you repair or remove an "
-            "extension, so an extension owning them could own its own uninstall."
+            "cannot be overridden: these commands inspect, set up or repair "
+            "agents-cli and its extensions, so they always run the built-in."
         )
 
 

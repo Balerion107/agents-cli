@@ -25,7 +25,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 import yaml
+from cookiecutter.environment import StrictEnvironment
 from cookiecutter.main import cookiecutter
+from jinja2 import TemplateError
 from rich.markup import escape
 from rich.prompt import Confirm, IntPrompt
 
@@ -43,9 +45,7 @@ from .copy_files import (
     copy_frontend_files,
 )
 from .lock_utils import get_lock_filename, is_empty_agent
-from .remote_template import (
-    get_base_template_name,
-)
+from .remote_template import FLAT_AGENT_DIRECTORY, get_base_template_name
 from .upgrade import DependencyReadError, union_python_base_dependencies
 from .version import agents_cli_version_pin, get_current_version
 
@@ -361,6 +361,13 @@ def _validate_go_agent_dir(agent_dir: str) -> None:
 
 
 def _validate_python_agent_dir(agent_dir: str) -> None:
+    if "/" in agent_dir:
+        raise ValueError(
+            f"Agent directory '{agent_dir}' is a nested path, which agents-cli "
+            "doesn't support yet for Python. Use a top-level package folder, such "
+            f"as '{agent_dir.rsplit('/', 1)[-1].replace('-', '_')}'."
+        )
+
     if "-" in agent_dir:
         raise ValueError(
             f"Agent directory '{agent_dir}' contains hyphens (-) which are not allowed. "
@@ -607,7 +614,7 @@ def load_template_config(template_dir: pathlib.Path) -> dict[str, Any]:
             config = yaml.safe_load(f)
             return config if config else {}
     except Exception as e:
-        logging.error(f"Error loading template config: {e}")
+        logging.error("Could not load template config: %s", e)
         return {}
 
 
@@ -827,7 +834,7 @@ def _extract_agent_garden_labels(
         and hasattr(remote_spec, "is_adk_samples")
         and remote_spec.is_adk_samples
     ):
-        # For ADK samples, template_path is like "python/agents/sample-name"
+        # For ADK recipes, template_path is like "core/python/recipe-name"
         agent_sample_id = pathlib.Path(remote_spec.template_path).name
         # For ADK samples, publisher is always "google"
         agent_sample_publisher = "google"
@@ -904,6 +911,47 @@ def _inject_app_object_if_missing(
         logging.warning(
             f"Could not inject app object into {agent_directory}/agent.py: {type(e).__name__}: {e}"
         )
+
+
+def _render_overlay_files(
+    project_dir: pathlib.Path, rel_paths: Any, context: dict[str, Any]
+) -> None:
+    """Render the files a remote template opts in to with the cookiecutter context.
+
+    The remote overlay is copied after cookiecutter runs, so placeholders in it
+    are otherwise left as written. Rendering is opt-in per file because other
+    remote templates may contain `{{ }}` for unrelated reasons.
+    """
+    # rel_paths comes straight from the template's YAML, so check its shape.
+    if not isinstance(rel_paths, list) or not all(
+        isinstance(rel, str) and rel for rel in rel_paths
+    ):
+        raise ValueError(
+            "render_files in the template's .template/templateconfig.yaml must "
+            'be a list of file paths, for example ["app/agent.py"].'
+        )
+    env = StrictEnvironment(keep_trailing_newline=True)
+    root = project_dir.resolve()
+    for rel in rel_paths:
+        path = (project_dir / rel).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise ValueError(
+                f"render_files entry {rel!r} in the template's "
+                ".template/templateconfig.yaml must name a file inside the "
+                "template. Fix or remove the entry."
+            )
+        try:
+            rendered = env.from_string(path.read_text(encoding="utf-8")).render(
+                cookiecutter=context
+            )
+        except TemplateError as e:
+            raise ValueError(
+                f"Could not render {rel!r}, listed in render_files in the "
+                f"template's .template/templateconfig.yaml: {e}. Fix the Jinja "
+                "in that file or remove it from render_files."
+            ) from e
+        path.write_text(rendered, encoding="utf-8")
+        logging.debug("Rendered remote template file %s", rel)
 
 
 def _generate_yaml_agent_shim(
@@ -1084,6 +1132,16 @@ def process_template(
     # Create console for user feedback
     console = Console()
 
+    def get_configured_agent_directory(
+        template_config: dict[str, Any],
+        cli_overrides: dict[str, Any] | None = None,
+    ) -> str:
+        """Like get_agent_directory, but returns ``FLAT_AGENT_DIRECTORY`` unmapped."""
+        cli_settings = cli_overrides.get("settings") if cli_overrides else None
+        if isinstance(cli_settings, dict) and cli_settings.get("agent_directory"):
+            return cli_settings["agent_directory"]
+        return (template_config.get("settings") or {}).get("agent_directory") or "app"
+
     def get_agent_directory(
         template_config: dict[str, Any],
         cli_overrides: dict[str, Any] | None = None,
@@ -1094,18 +1152,10 @@ def process_template(
         Handles the special case where agent_directory is "." (flat structure),
         deriving the target directory name from the remote template folder name.
         """
-        agent_dir = None
-        if (
-            cli_overrides
-            and "settings" in cli_overrides
-            and "agent_directory" in cli_overrides["settings"]
-        ):
-            agent_dir = cli_overrides["settings"]["agent_directory"]
-        else:
-            agent_dir = template_config.get("settings", {}).get("agent_directory", "app")
+        agent_dir = get_configured_agent_directory(template_config, cli_overrides)
 
         # Handle "." (flat structure) - derive target from folder name
-        if agent_dir == ".":
+        if agent_dir == FLAT_AGENT_DIRECTORY:
             if remote_template_path:
                 # Derive from remote template folder name
                 folder_name = remote_template_path.name.replace("-", "_")
@@ -1488,18 +1538,9 @@ def process_template(
                     generated_project_dir,
                 )
 
-                # Check if this is a flat structure template
-                # Flat structure can be detected via:
-                # 1. Auto-detection (is_flat_structure flag in remote_config)
-                # 2. source_agent_directory set to "." in config
-                # 3. CLI override with -dir . (agent_directory = ".")
-                cli_agent_dir = (
-                    cli_overrides.get("settings", {}).get("agent_directory")
-                    if cli_overrides
-                    else None
-                )
-                is_flat_structure = (cli_agent_dir == ".") or (
-                    remote_config and remote_config.get("is_flat_structure", False)
+                is_flat_structure = bool(template_config.get("is_flat_structure")) or (
+                    get_configured_agent_directory(template_config, cli_overrides)
+                    == FLAT_AGENT_DIRECTORY
                 )
 
                 if is_flat_structure:
@@ -1526,6 +1567,11 @@ def process_template(
                             guidance_filename=agent_guidance_filename,
                         ),
                     )
+                    render_files = (remote_config or {}).get("render_files") or []
+                    if render_files and not overlay_is_project:
+                        _render_overlay_files(
+                            generated_project_dir, render_files, cookiecutter_config
+                        )
                 logging.debug("Remote template files copied successfully")
 
                 # ADK agent compatibility: prefer YAML shim, otherwise inject

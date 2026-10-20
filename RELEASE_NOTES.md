@@ -3,6 +3,33 @@
 All notable changes to this project will be documented in this file.
 
 
+## [1.11.0] - 2026-10-20
+
+- Breaking: The `adk@<name>` shortcut has been removed. Pass the recipe's GitHub URL to `agents-cli create` instead, and browse recipes at https://github.com/google/adk-recipes.
+  - The scaffold's "Browse ADK recipes" option lists recipes from both `core/python/` and `contrib/python/` in google/adk-recipes.
+  - Projects created with `adk@` still upgrade. Their `base_template` is rewritten to the recipe URL on the first applied change.
+- New projects use `google-adk>=2.12.0` and `google-cloud-aiplatform>=2.2,<3`. Agent Runtime projects also depend on `google-cloud-agentplatform`, and the LangChain extension template moves to `google-cloud-aiplatform>=2.2,<3`.
+- `agents-cli deploy` to Agent Runtime registers the ADK artifact methods (`async_save_artifact`, `async_load_artifact`, and others).
+- `agents-cli deploy` to Agent Runtime shows the last 40 lines of the build log when a build fails, instead of only "Build failed". `deploy --status` shows it too.
+- agents-cli's `uv` commands use public PyPI even when a machine-wide `uv` config points at a mirror, so `deploy` no longer breaks. `agents-cli install` warns when `uv.lock` uses a mirror and shows the command to re-lock. `install --locked` now fails on such a lock. Scripts and CI jobs that run `install --locked` may need an update.
+  - https://github.com/google/agents-cli/issues/95
+- `agents-cli create` finds the agent code in any remote template, not only adk-recipes ones. When both `app/` and a folder-named package exist, `app/` wins; use `--agent-directory` to pick the other. A top-level `agent_directory` in a template's `agents-cli-manifest.yaml` is now respected.
+- LangChain agents are now named after your project, or the name you pass with `--root-agent-name`, like ADK agents.
+  - Template authors can list files under `render_files` in `.template/templateconfig.yaml`. Placeholders such as the agent name are then filled in in those files when a project is created.
+- Traces from LangChain agents now record which conversation each request belongs to (`gen_ai.conversation.id`), so you can follow a conversation across requests, as you already can for ADK agents.
+- `agents-cli run --mode a2a` shows why an agent's task failed, was rejected or was canceled (`[error]: <reason>`) instead of "(no response content)".
+- ADK Go agents no longer lose replies for turns that take longer than 15 seconds on `/run` or A2A.
+- The Cloud Build pipelines and Dockerfile in generated ADK Go projects retry Go module downloads, so a dropped connection to the Go module proxy no longer fails the build.
+- ADK Go projects include only the session backend chosen at creation time.
+- `agents-cli scaffold upgrade` stops instead of reporting success when it cannot build the template of the project's original version. It shows why, and suggests `--force` when that can help.
+- `agents-cli scaffold upgrade` no longer warns about a legacy eval file that an earlier, stopped upgrade already migrated.
+- `agents-cli setup --workspace` lists each installed skill's folder once.
+- Extensions can no longer override `agents-cli info`, `login`, `setup` or `update`.
+- `agents-cli --help`, the docs and error hints show `create` commands that work as written: `-i` to choose options in prompts, `-y` to accept the defaults (`adk` template, `agent_runtime` target).
+- Warnings print as `⚠️  Warning: <message>` with a yellow prefix on stderr. Some warnings that used to go to stdout now go to stderr. Scripts that read warnings from stdout may need an update.
+- Errors that agents-cli logs print with the same red `❌ Error:` prefix as other errors, and `--debug` output prints as dim `Debug: …` lines.
+- agents-cli no longer prints the google-auth quota-project warning or google-genai's automatic function calling advice. `eval run` no longer prints "Could not obtain credentials" when it talks to the local agent server.
+
 ## [1.10.0] - 2026-10-12
 
 - **New projects use Agent Identity by default.** `agents-cli scaffold create` records `agent_runtime_identity_default: agent_identity`. Then `agents-cli deploy` creates the Agent Runtime agent under its own Agent Identity principal, and the generated Terraform (`infra single-project`, `infra cicd`) does the same. To keep a service account, pass `--agent-runtime-identity-default service_account` to `scaffold create` or `scaffold enhance`. Existing projects are not changed: if the setting is missing, it reads as `service_account`, and `scaffold upgrade` does not migrate it.

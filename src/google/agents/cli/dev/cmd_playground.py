@@ -16,6 +16,7 @@
 
 import logging
 import shlex
+from pathlib import Path
 
 import click
 from click.core import ParameterSource
@@ -29,6 +30,7 @@ from google.agents.cli._project import (
 )
 from google.agents.cli._runner import run
 from google.agents.cli._tools import is_windows
+from google.agents.cli._uv_index import uv_index_env
 from google.agents.cli.scaffold.utils.language import dispatch_language
 
 _console = Console()
@@ -67,7 +69,8 @@ def cmd_playground(port, host, reload_agents, otel_to_cloud):
     )
 
     _print_banner(url, args)
-    run(args, print_cmd=False, check_err_msg="Failed to start playground")
+    env = uv_index_env(Path.cwd()) if cfg.language == "python" else None
+    run(args, print_cmd=False, env=env, check_err_msg="Failed to start playground")
 
 
 def _build_python_playground(

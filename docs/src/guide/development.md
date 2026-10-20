@@ -24,7 +24,7 @@ Save your answers to `.agents-cli-spec.md` in the current directory — overview
 Create a new project from a template:
 
 ```bash
-agents-cli create my-agent
+agents-cli create my-agent -i
 ```
 
 Choose your agent template (`adk`) and deployment target during creation. For fast prototyping without infrastructure decisions:

@@ -25,7 +25,7 @@ agent packaged for Agent Runtime.
 import inspect
 import json
 
-from agentplatform.agent_engines.templates.adk import AdkApp
+from agentplatform.frameworks.adk import AdkApp
 from fastapi import FastAPI, HTTPException, Request, encoders, responses
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 

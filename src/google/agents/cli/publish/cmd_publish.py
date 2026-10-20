@@ -32,7 +32,12 @@ from google.agents.cli._gcp_project import (
     get_gcp_project_number,
     resolve_gcp_project,
 )
-from google.agents.cli._output import Console, emit
+from google.agents.cli._output import (
+    INTERACTIVE_FIX,
+    Console,
+    emit,
+    programmatic_mode_error,
+)
 from google.agents.cli._project import read_project_config
 from google.agents.cli._remote import build_agent_runtime_passthrough_url
 from google.agents.cli.auth import get_access_token, get_id_token
@@ -192,24 +197,21 @@ def fetch_agent_card_from_url(url: str) -> dict | None:
             # even if the URL points to an untrusted endpoint.
             parsed = urlparse(url)
             if parsed.scheme != "https":
-                console.print(
-                    f"⚠️  URL uses {parsed.scheme}:// — credentials may be exposed in transit. "
+                logging.warning(
+                    "URL uses %s:// — credentials may be exposed in transit. "
                     "Use https:// for production endpoints.",
-                    style="yellow",
+                    parsed.scheme,
                 )
             audience = f"{parsed.scheme}://{parsed.netloc}"
             try:
                 identity_token = get_id_token(audience)
                 headers["Authorization"] = f"Bearer {identity_token}"
             except Exception as auth_err:
-                console.print(
-                    f"⚠️  Could not obtain ID token: {auth_err}",
-                    style="yellow",
-                )
-                console.print(
-                    "  Proceeding without authentication. "
-                    "If the endpoint requires auth, the request will fail.",
-                    style="yellow",
+                logging.warning(
+                    "Could not obtain ID token: %s. Proceeding without "
+                    "authentication. If the endpoint requires auth, the request "
+                    "will fail.",
+                    auth_err,
                 )
 
         response = requests.get(url, headers=headers, timeout=10)
@@ -217,21 +219,16 @@ def fetch_agent_card_from_url(url: str) -> dict | None:
 
         return response.json()
     except requests.exceptions.HTTPError as e:
-        console.print(
-            f"⚠️  HTTP error fetching agent card from {url}: {e}",
-            style="yellow",
-        )
+        hint = ""
         if e.response is not None and e.response.status_code in (401, 403):
-            console.print(
-                "  Authentication failed. Ensure you are logged in with 'gcloud auth application-default login'",
-                style="yellow",
+            hint = (
+                " Authentication failed. Ensure you are logged in with "
+                "'gcloud auth application-default login'."
             )
+        logging.warning("HTTP error fetching agent card from %s: %s.%s", url, e, hint)
         return None
     except Exception as e:
-        console.print(
-            f"⚠️  Could not fetch agent card from {url}: {e}",
-            style="yellow",
-        )
+        logging.warning("Could not fetch agent card from %s: %s", url, e)
         return None
 
 
@@ -465,16 +462,10 @@ def list_gemini_enterprise_apps(
             if hasattr(e, "response") and e.response is not None
             else "unknown"
         )
-        console.print(
-            f"⚠️  Could not list Gemini apps: HTTP {error_code}",
-            style="yellow",
-        )
+        logging.warning("Could not list Gemini apps: HTTP %s", error_code)
         return None
     except Exception as e:
-        console.print(
-            f"⚠️  Could not list Gemini apps: {e}",
-            style="yellow",
-        )
+        logging.warning("Could not list Gemini apps: %s", e)
         return None
 
 
@@ -521,10 +512,7 @@ def prompt_for_gemini_enterprise_components(
     console.print(f"[dim]Looking up project number for '{project_id}'...[/]")
     project_number = get_gcp_project_number(project_id)
     if not project_number:
-        console.print(
-            f"⚠️  Could not find project number for '{project_id}'",
-            style="yellow",
-        )
+        logging.warning("Could not find project number for '%s'", project_id)
         console.print("Please enter the project number directly:")
         project_number = click.prompt("Project number", type=str).strip()
     else:
@@ -1272,9 +1260,13 @@ def register_gemini(
             )
             resolved_registration_type = "a2a" if choice == "1" else "adk"
         else:
-            raise click.UsageError(
-                "--registration-type is required in programmatic mode. "
-                "Pass --interactive for interactive mode or --registration-type to specify."
+            raise programmatic_mode_error(
+                "--registration-type is required",
+                (
+                    "--registration-type <a2a|adk>",
+                    "a2a needs --agent-card-url, adk needs --agent-runtime-id",
+                ),
+                INTERACTIVE_FIX,
             )
 
     # Log the registration type

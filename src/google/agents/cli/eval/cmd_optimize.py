@@ -18,6 +18,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import click
 
@@ -27,6 +28,7 @@ from google.agents.cli._project import (
     require_agent_directory,
 )
 from google.agents.cli._runner import run
+from google.agents.cli._uv_index import sync_failure_message, uv_index_env
 from google.agents.cli.eval.optimize_utils import _prepare_adk_evalsets
 
 _DEFAULT_OPTIMIZATION_CONFIG = "tests/eval/optimization_config.json"
@@ -159,7 +161,7 @@ def _execute_optimization_run(
                 json.dump(optimizer_config, tmp)
             args.extend(["--optimizer_config_file_path", tmp_optimizer_path])
 
-        run(args, check_err_msg="Optimization failed")
+        run(args, env=uv_index_env(Path.cwd()), check_err_msg="Optimization failed")
     finally:
         # Clean up temp configs
         for p in [tmp_sampler_path, tmp_optimizer_path]:
@@ -234,9 +236,11 @@ def cmd_optimize(dataset_file, target_metric, config_path):
     agent_path = f"./{cfg.agent_directory}"
 
     # Sync eval extras
+    uv_env = uv_index_env(Path.cwd())
     run(
         ["uv", "sync", "--dev", "--extra", "eval"],
-        check_err_msg="Failed to sync eval dependencies",
+        env=uv_env,
+        check_err_msg=sync_failure_message("Failed to sync eval dependencies", uv_env),
     )
 
     opt_data = _load_configs_and_datasets(config_path, dataset_file, target_metric)

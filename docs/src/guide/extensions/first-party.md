@@ -24,7 +24,7 @@ The LangChain template runs a [LangChain](https://python.langchain.com) agent th
 
 ```bash
 agents-cli create my-agent \
-    --agent google/agents-cli/extensions/langchain/template@v1.10.0 \
+    --agent google/agents-cli/extensions/langchain/template@v1.11.0 \
     -d cloud_run
 cd my-agent && agents-cli install
 ```
@@ -47,6 +47,8 @@ Everything else stays native — **do not override** `deploy` (the target-approp
 
 The default `app/agent.py` is a Gemini ReAct agent built with `langchain.agents.create_agent` and a sample `get_weather` tool. It calls Gemini on Gemini platform using Application Default Credentials; set `GOOGLE_API_KEY` or `GEMINI_API_KEY` in `.env` to use AI Studio instead (the scaffolded `.env.example` names the latter).
 
+The agent is named after the project (`my-agent` becomes `my_agent`), or after `--root-agent-name` if you pass it. Telemetry reports that name as `gen_ai.agent.name`, and the manifest records it as `create_params.root_agent_name`. To rename the agent, change it in `app/agent.py` and in the manifest.
+
 Because the project rides the framework-neutral `empty_py` substrate, the generated code contains **no ADK dependency**, and the template ships its own coding-agent skill.
 
 ### Serving over A2A
@@ -66,7 +68,7 @@ AGENTS_CLI_DISABLE_OVERRIDES=1 agents-cli run --url https://<service-url> --mode
 ### Full journey
 
 ```bash
-agents-cli create my-agent --agent google/agents-cli/extensions/langchain/template@v1.10.0 -d cloud_run
+agents-cli create my-agent --agent google/agents-cli/extensions/langchain/template@v1.11.0 -d cloud_run
 cd my-agent && agents-cli install
 agents-cli run "what's the weather in San Francisco?"       # in-process graph
 agents-cli eval generate --dataset tests/eval/datasets/basic-dataset.json -o tests/eval/output/

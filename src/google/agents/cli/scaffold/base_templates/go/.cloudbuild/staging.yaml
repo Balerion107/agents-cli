@@ -129,10 +129,24 @@ steps:
         echo $(gcloud auth print-access-token -q) > auth_token.txt
 {%- endif %}
 
+  # Pre-fetch Go modules with retries so a dropped module proxy connection
+  # doesn't fail the load test, which reuses them via GOMODCACHE in /workspace.
+  - name: "golang:1.26"
+    id: download-modules
+    entrypoint: /bin/bash
+    env:
+      - "GOMODCACHE=/workspace/.gomodcache"
+    args:
+      - "-c"
+      - |
+        go mod download || (sleep 10 && go mod download) || (sleep 20 && go mod download)
+
 {%- if cookiecutter.deployment_target == 'cloud_run' %}
   - name: "golang:1.26"
     id: load_test
     entrypoint: /bin/bash
+    env:
+      - "GOMODCACHE=/workspace/.gomodcache"
     args:
       - "-c"
       - |
@@ -147,11 +161,13 @@ steps:
   - name: "gcr.io/cloud-builders/gcloud"
     id: load_test
     entrypoint: /bin/bash
+    env:
+      - "GOMODCACHE=/workspace/.gomodcache"
     args:
       - "-c"
       - |
         mkdir -p e2e/load_test/.results
-        curl -sL https://go.dev/dl/go1.26.5.linux-amd64.tar.gz | tar -C /usr/local -xz
+        curl -fsSL --retry 3 https://go.dev/dl/go1.26.5.linux-amd64.tar.gz | tar -C /usr/local -xz
         export PATH="$$PATH:/usr/local/go/bin"
         gcloud container clusters get-credentials ${_GKE_CLUSTER_NAME} --region ${_REGION} --project ${_STAGING_PROJECT_ID}
         kubectl port-forward svc/{{cookiecutter.project_name}} 8080:8080 -n {{cookiecutter.project_name}} &
@@ -168,6 +184,8 @@ steps:
   - name: "golang:1.26"
     id: load_test
     entrypoint: /bin/bash
+    env:
+      - "GOMODCACHE=/workspace/.gomodcache"
     args:
       - "-c"
       - |

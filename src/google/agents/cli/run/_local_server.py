@@ -30,6 +30,7 @@ import click
 import psutil
 
 from google.agents.cli._runner import popen_resolved_detached, redact_cmd
+from google.agents.cli._uv_index import uv_index_env
 from google.agents.cli.scaffold.utils.language import (
     dispatch_language,
     get_language_config,
@@ -48,6 +49,7 @@ _STARTUP_TIMEOUT_WINDOWS = 90
 _DEFAULT_STARTUP_TIMEOUT = (
     _STARTUP_TIMEOUT_WINDOWS if os.name == "nt" else _STARTUP_TIMEOUT_POSIX
 )
+_GO_WRITE_TIMEOUT = "10m"
 
 
 class ServerInfo(NamedTuple):
@@ -136,13 +138,10 @@ def ensure_server(
                     "trace_to_cloud"
                 )
                 if otel_to_cloud and not otel_to_cloud_from_pid_file:
-                    click.secho(
-                        "Warning: reusing existing server that was started "
-                        "without --otel-to-cloud.\n"
-                        "  Run 'agents-cli run --stop-server' first to "
-                        "restart with tracing enabled.",
-                        fg="yellow",
-                        err=True,
+                    logging.warning(
+                        "Reusing existing server that was started without "
+                        "--otel-to-cloud. Run 'agents-cli run --stop-server' "
+                        "first to restart with tracing enabled."
                     )
                 _update_activity(project_root)
                 return ServerInfo(port=info["port"], started=False, pid=info["pid"])
@@ -323,7 +322,18 @@ def _go_serve_command(
     Mirrors the template Makefile's local-backend target. ADK Go serves the
     ADK REST API at the root (-path_prefix /) and A2A under /a2a on this port.
     """
-    cmd = ["go", "run", ".", "web", "--port", str(port)]
+    # Raise ADK Go's 15s default write timeout, which cuts off slow /run and A2A
+    # replies. Newer scaffolds set it in main.go too; this covers older ones.
+    cmd = [
+        "go",
+        "run",
+        ".",
+        "web",
+        "--port",
+        str(port),
+        "--write-timeout",
+        _GO_WRITE_TIMEOUT,
+    ]
     if otel_to_cloud:
         cmd.append("--otel_to_cloud")
     return [*cmd, "api", "-path_prefix", "/", "a2a", "appinfo"]
@@ -376,6 +386,9 @@ def _start_server(
     env = os.environ.copy()
     env["USE_IN_MEMORY_SESSION"] = "true" if use_in_memory_session else "false"
     env.setdefault("PYTHONUNBUFFERED", "1")
+    if language == "python":
+        # Keep `uv run` from re-locking against a machine-wide mirror.
+        env.update(uv_index_env(project_root) or {})
 
     log_file = open(log_path, "a", encoding="utf-8")
     stderr_file = None

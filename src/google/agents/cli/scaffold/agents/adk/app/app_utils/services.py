@@ -25,7 +25,7 @@ import functools
 import os
 
 {% if cookiecutter.session_type == "agent_platform_sessions" -%}
-from agentplatform import agent_engines
+import agentplatform
 {% endif -%}
 from google.adk.artifacts import GcsArtifactService, InMemoryArtifactService
 from google.adk.cli.service_registry import get_service_registry
@@ -75,20 +75,33 @@ def get_session_service():
     if not use_in_memory_session:
         default_agent_name = "{{cookiecutter.project_name}}"
         agent_name = os.environ.get("AGENT_ENGINE_SESSION_NAME", default_agent_name)
-        existing_agents = list(agent_engines.list(filter=f"display_name={agent_name}"))
-        engine = (
+        client = agentplatform.Client(location=agent_runtime_location())
+        existing_agents = list(
+            client.runtimes.list(config={"filter": f"display_name={agent_name}"})
+        )
+        runtime = (
             existing_agents[0]
             if existing_agents
-            else agent_engines.create(display_name=agent_name)
+            else client.runtimes.create(config={"display_name": agent_name})
         )
         return create_session_service_from_options(
             base_dir=_AGENT_DIR,
-            session_service_uri=f"agentengine://{engine.resource_name}",
+            session_service_uri=f"agentengine://{runtime.api_resource.name}",
         )
 
     from google.adk.sessions.in_memory_session_service import InMemorySessionService
 
     return InMemorySessionService()
+
+
+def agent_runtime_location() -> str:
+    """Region for the session Agent Runtime; it doesn't support "global"."""
+    if location := os.environ.get("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION"):
+        return location
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION")
+    if location and location != "global":
+        return location
+    return "us-east1"
 {%- else %}
     if uri := os.environ.get("SESSION_SERVICE_URI"):
         return create_session_service_from_options(

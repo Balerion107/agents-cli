@@ -27,12 +27,16 @@ from google.agents.cli import _telemetry
 from google.agents.cli.__init__ import __version__
 from google.agents.cli._output import emit
 from google.agents.cli._project import (
+    CREATE_PROJECT_HINT,
     check_cli_version,
     find_project_root,
     read_project_config,
     resolve_root_agent_name,
 )
-from google.agents.cli._skills_check import get_installed_skills
+from google.agents.cli._skills_check import (
+    find_parent_workspace_skills,
+    get_installed_skills,
+)
 from google.agents.cli.extension._loader import ExtensionSet, load_extension_set
 from google.agents.cli.extension._paths import user_config_root
 
@@ -94,12 +98,36 @@ def _print_installed_skills(
             click.echo(f"  - {name}")
 
 
+def _path_or_none(path: Path | None) -> str | None:
+    return str(path) if path else None
+
+
+def _print_parent_workspace_skills_hint(
+    parent_skills_dir: Path | None, skills_target_dir: Path
+) -> None:
+    if parent_skills_dir is None:
+        return
+    click.echo("  Workspace skills found in a parent directory:")
+    click.echo(f'    "{parent_skills_dir}"')
+    click.echo("  Coding agents started in this directory may not load them.")
+    click.echo("  Start your coding agent in:")
+    click.echo(f'    "{parent_skills_dir}"')
+    click.echo("  Or install them by running:")
+    click.echo(f'    cd "{skills_target_dir}" && agents-cli setup --workspace')
+
+
 @click.command()
 @click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON.")
 def cmd_info(as_json: bool) -> None:
     """Show project configuration, paths, and CLI version."""
     installed_skills = get_installed_skills()
     project_root = find_project_root()
+    # Only worth pointing at a parent's skills when none load here. Start at the
+    # project root so skills installed there aren't reported as a parent's.
+    skills_target_dir = project_root or Path.cwd()
+    parent_skills_dir = (
+        None if installed_skills else find_parent_workspace_skills(skills_target_dir)
+    )
     os_info = platform.platform()
     telemetry_enabled = _telemetry.is_telemetry_enabled()
     extension_set = load_extension_set(project_root, user_config_root())
@@ -110,6 +138,7 @@ def cmd_info(as_json: bool) -> None:
                 "cli_install_path": _CLI_INSTALL_PATH,
                 "os_info": os_info,
                 "installed_skills": installed_skills,
+                "parent_workspace_skills_dir": _path_or_none(parent_skills_dir),
                 "project": None,
                 "extensions": extension_set.command_rows(),
                 "extension_conflicts": extension_set.conflict_rows(),
@@ -123,11 +152,12 @@ def cmd_info(as_json: bool) -> None:
             click.echo(f"OS info:            {os_info}")
             click.echo(f"Telemetry:          {_telemetry_status(telemetry_enabled)}")
             _print_installed_skills(installed_skills)
+            _print_parent_workspace_skills_hint(parent_skills_dir, skills_target_dir)
             _print_extensions(extension_set)
             click.echo()
             click.echo("No agent project found in the current directory or any parent.")
             click.echo("  Run this command from within a project, or create one:")
-            click.echo("    agents-cli create my-agent")
+            click.echo(CREATE_PROJECT_HINT)
         return
 
     cfg = read_project_config(str(project_root))
@@ -138,6 +168,7 @@ def cmd_info(as_json: bool) -> None:
         "cli_install_path": _CLI_INSTALL_PATH,
         "os_info": os_info,
         "installed_skills": installed_skills,
+        "parent_workspace_skills_dir": _path_or_none(parent_skills_dir),
         "project_root": str(project_root),
         "project_name": cfg.project_name,
         "root_agent_name": resolve_root_agent_name(cfg),
@@ -161,6 +192,7 @@ def cmd_info(as_json: bool) -> None:
     click.echo(f"OS info:            {os_info}")
     click.echo(f"Telemetry:          {_telemetry_status(telemetry_enabled)}")
     _print_installed_skills(installed_skills)
+    _print_parent_workspace_skills_hint(parent_skills_dir, skills_target_dir)
     click.echo()
     click.echo(f"Project root:       {project_root}")
     click.echo(f"Project name:       {cfg.project_name or '(not set)'}")

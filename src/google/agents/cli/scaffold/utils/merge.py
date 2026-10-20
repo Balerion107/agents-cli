@@ -21,10 +21,12 @@ resolving conflicts, and applying file changes.  The central
 """
 
 import difflib
+import enum
 import logging
 import pathlib
 import shutil
 import tempfile
+import textwrap
 from collections.abc import Callable
 
 import click
@@ -50,12 +52,21 @@ console = Console()
 MAX_DIFF_DISPLAY_CHARS = 2000
 
 
-def _is_fetchable_version(version: str) -> bool:
-    """True if ``version`` is worth attempting to fetch from PyPI.
+class MergeResult(enum.Enum):
+    """How ``run_three_way_merge`` ended."""
 
-    Rejects the unknown-version sentinel and unparseable strings; whether the
+    DONE = "done"
+    OLD_TEMPLATE_FAILED = "old_template_failed"
+    NEW_TEMPLATE_FAILED = "new_template_failed"
+
+
+def is_fetchable_version(version: str) -> bool:
+    """True if ``version`` could be a release published on PyPI.
+
+    Rejects the unknown-version sentinel, unparseable strings and PEP 440
+    local versions (``1.0.0+build``), which PyPI never hosts. Whether the
     release actually exists is confirmed only by the fetch in
-    ``_run_pinned_create`` (which falls back to vendored on failure).
+    ``_run_pinned_create``.
     """
     from packaging import version as pkg_version
 
@@ -65,10 +76,9 @@ def _is_fetchable_version(version: str) -> bool:
         return False
 
     try:
-        pkg_version.parse(version)
-    except Exception:
+        return pkg_version.parse(version).local is None
+    except pkg_version.InvalidVersion:
         return False
-    return True
 
 
 def _run_vendored_create(
@@ -112,7 +122,7 @@ def _run_vendored_create(
         logging.error(f"Create command failed with exit code {e.code}")
         return False
     except Exception as e:
-        logging.error(f"Error running create command: {e}")
+        logging.error("Could not run the create command: %s", e)
         return False
 
 
@@ -153,10 +163,13 @@ def _run_pinned_create(
         return False
 
     if result.returncode != 0:
-        logging.debug(
-            "uvx create for %s exited %s:\n%s", version, result.returncode, result.stderr
+        # Not parsed: uv changes its error layout between releases.
+        logging.error(
+            "uvx could not build the agents-cli %s template (exit %s):\n%s",
+            version,
+            result.returncode,
+            textwrap.indent((result.stderr or "").strip(), "  "),
         )
-        logging.error("Failed to generate the %s template via uvx.", version)
         return False
 
     expected_dir = output_dir / project_name
@@ -179,11 +192,13 @@ def run_create_command(
 ) -> bool:
     """Generate a template snapshot for the 3-way upgrade/enhance merge.
 
-    A real ``version`` that differs from the running CLI is re-created by that
-    exact prior release, so the snapshot matches what it shipped. Everything
-    else falls back to the bundled create command: no version, the current
-    version, an uninstalled dev build, an unparseable string, or a version uvx
-    fails to fetch (e.g. it doesn't exist on PyPI).
+    A ``version`` that differs from the running CLI is re-created by that exact
+    release, so the snapshot matches what it shipped. With no version, or the
+    current one, the bundled create command is used.
+
+    A version that cannot be fetched or built (the unknown-version sentinel, an
+    unparseable string, a local version, a release missing from PyPI, a uvx or
+    network failure) fails.
 
     Returns True if the template was generated, False otherwise.
     """
@@ -192,28 +207,11 @@ def run_create_command(
     if not version or version == get_current_version():
         return _run_vendored_create(args, output_dir, project_name)
 
-    if not _is_fetchable_version(version):
-        logging.warning(
-            "Cannot fetch agents-cli@%s to build the prior-version baseline; "
-            "falling back to the current templates. File deletions and updates "
-            "from intervening versions may not be detected — review the result.",
-            version,
-        )
-        return _run_vendored_create(args, output_dir, project_name)
+    if not is_fetchable_version(version):
+        logging.error("agents-cli %s is not a version published on PyPI.", version)
+        return False
 
-    if _run_pinned_create(args, output_dir, project_name, version):
-        return True
-
-    # Parsed fine but uvx couldn't build it (the release may not exist on PyPI,
-    # or uvx/network failed). Degrade to the bundled templates rather than
-    # failing the whole merge.
-    logging.warning(
-        "Could not build the agents-cli@%s baseline via uvx; falling back to "
-        "the current templates. File deletions and updates from intervening "
-        "versions may not be detected — review the result.",
-        version,
-    )
-    return _run_vendored_create(args, output_dir, project_name)
+    return _run_pinned_create(args, output_dir, project_name, version)
 
 
 def display_results(
@@ -494,7 +492,7 @@ def run_three_way_merge(
     pre_apply_hook: Callable[[pathlib.Path], bool] | None = None,
     post_apply_hook: Callable[[pathlib.Path, str], None] | None = None,
     post_apply_no_changes_hook: Callable[[pathlib.Path, str], None] | None = None,
-) -> bool:
+) -> MergeResult:
     """Shared 3-way merge pipeline used by both *upgrade* and *enhance*.
 
     Generates old and new template snapshots, compares every file against
@@ -525,9 +523,11 @@ def run_three_way_merge(
             writes itself, such as the manifest.
 
     Returns:
-        ``True`` if the pipeline completed (changes applied, user
-        cancelled, or nothing to do).  ``False`` if template generation
-        failed and the caller should fall back to an alternative strategy.
+        ``MergeResult.DONE`` if the pipeline completed (changes applied, user
+        cancelled, or nothing to do). ``OLD_TEMPLATE_FAILED`` or
+        ``NEW_TEMPLATE_FAILED`` if that template could not be generated.
+        Nothing was written then; the caller reports it or falls back to an
+        alternative strategy.
 
     Raises:
         SystemExit: If writing the merged dependencies fails. The post-apply
@@ -547,8 +547,7 @@ def run_three_way_merge(
             # Optimisation: identical args -> generate once, reuse for both.
             console.print("[dim]  - Template...[/dim]")
             if not run_create_command(old_args, old_template_dir, project_name):
-                console.print("[bold red]Error:[/bold red] Failed to generate template")
-                return False
+                return MergeResult.NEW_TEMPLATE_FAILED
             old_template_project = old_template_dir / project_name
             new_template_project = old_template_project  # same reference
         else:
@@ -557,18 +556,12 @@ def run_three_way_merge(
             if not run_create_command(
                 old_args, old_template_dir, project_name, old_version
             ):
-                console.print(
-                    "[bold red]Error:[/bold red] Failed to generate old template"
-                )
-                return False
+                return MergeResult.OLD_TEMPLATE_FAILED
 
             # Generate new template
             console.print("[dim]  - New template...[/dim]")
             if not run_create_command(new_args, new_template_dir, project_name):
-                console.print(
-                    "[bold red]Error:[/bold red] Failed to generate new template"
-                )
-                return False
+                return MergeResult.NEW_TEMPLATE_FAILED
 
             old_template_project = old_template_dir / project_name
             new_template_project = new_template_dir / project_name
@@ -631,7 +624,7 @@ def run_three_way_merge(
             )
             if post_apply_no_changes_hook and not dry_run:
                 post_apply_no_changes_hook(project_dir, language)
-            return True
+            return MergeResult.DONE
 
         # ── Confirm ──────────────────────────────────────────────────
         if mode.interactive and not dry_run:
@@ -648,12 +641,13 @@ def run_three_way_merge(
                 console.print(
                     f"[yellow]{operation_label.capitalize()} cancelled.[/yellow]"
                 )
-                return True
+                return MergeResult.DONE
 
         # ── Pre-apply hook (e.g. backup) ─────────────────────────────
         if pre_apply_hook and not dry_run:
             if not pre_apply_hook(project_dir):
-                return True  # hook signalled abort (e.g. user cancelled backup)
+                # The hook signalled abort (e.g. the user cancelled the backup).
+                return MergeResult.DONE
 
         # ── Apply ────────────────────────────────────────────────────
         counts = apply_changes(
@@ -711,7 +705,7 @@ def run_three_way_merge(
                 f"[bold green]✅ {operation_label.capitalize()} complete![/bold green]"
             )
 
-        return True
+        return MergeResult.DONE
 
     finally:
         shutil.rmtree(temp_base, ignore_errors=True)

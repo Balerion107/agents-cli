@@ -15,6 +15,7 @@
 """Shared backup utility for project directories."""
 
 import datetime
+import logging
 import pathlib
 import shutil
 from collections.abc import Callable
@@ -64,7 +65,7 @@ def create_project_backup(
         console.print(f"Backup created: [cyan]{backup_dir}[/cyan]")
         return backup_dir
     except Exception as e:
-        console.print(f"⚠️  [yellow]Warning: Could not create backup: {e}[/yellow]")
+        logging.warning("Could not create backup: %s", e)
         if interactive:
             if not click.confirm("Continue without backup?", default=True):
                 raise click.Abort() from e

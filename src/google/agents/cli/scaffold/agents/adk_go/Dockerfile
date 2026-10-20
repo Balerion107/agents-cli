@@ -20,8 +20,9 @@ WORKDIR /app
 # Copy go mod files
 COPY go.mod go.sum* ./
 
-# Download dependencies
-RUN go mod download
+# Download dependencies, retrying so a dropped module proxy connection doesn't
+# fail the image build
+RUN go mod download || (sleep 10 && go mod download) || (sleep 20 && go mod download)
 
 # Copy source code
 COPY *.go ./

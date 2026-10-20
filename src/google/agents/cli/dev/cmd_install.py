@@ -27,6 +27,11 @@ from google.agents.cli._project import (
     read_project_config,
 )
 from google.agents.cli._runner import run
+from google.agents.cli._uv_index import (
+    sync_failure_message,
+    uv_index_env,
+    warn_if_lock_uses_non_public_index,
+)
 from google.agents.cli.scaffold.utils.language import dispatch_language
 
 
@@ -64,6 +69,9 @@ def _install_python(*, clean: bool, locked: bool) -> None:
     When ``locked`` is true, runs ``uv sync --locked`` so a stale uv.lock fails the command instead
     of being updated.
     When ``clean`` is true, deletes the project's ``.venv``.
+    Resolves against the same public index the scaffold locks against (see
+    :func:`~google.agents.cli._uv_index.uv_index_env`), and warns if the
+    resulting uv.lock still points at an index remote builds may not reach.
     """
     # Resolve uv up front: --clean deletes the venv. Fail quickly here (before
     # any destructive work) rather than when calling uv.
@@ -73,7 +81,16 @@ def _install_python(*, clean: bool, locked: bool) -> None:
     cmd = ["uv", "sync"]
     if locked:
         cmd.append("--locked")
-    run(cmd, check_err_msg="Failed to install dependencies")
+    root = Path.cwd()
+    env = uv_index_env(root)
+    run(
+        cmd,
+        env=env,
+        check_err_msg=sync_failure_message(
+            "Failed to install dependencies", env, locked=locked
+        ),
+    )
+    warn_if_lock_uses_non_public_index(root)
 
 
 def _install_go(*, clean: bool, locked: bool) -> None:

@@ -22,12 +22,49 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from dataclasses import dataclass
-from typing import Any, NamedTuple
+import urllib.parse
+from dataclasses import dataclass, replace
+from typing import Any, NamedTuple, TypedDict
 
 import click
 
+from google.agents.cli._git import is_option_like
 from google.agents.cli._output import Console
+
+from .fs import walk_source_tree
+from .language import get_language_config
+
+ADK_RECIPES_REPO_URL = "https://github.com/google/adk-recipes"
+# adk-samples was renamed to adk-recipes; GitHub serves both names.
+_ADK_REPO_NAMES = frozenset({"adk-samples", "adk-recipes"})
+ADK_SHORTCUT_PREFIX = "adk@"
+# Where the Python recipes live in adk-recipes: scanned by discover_adk_agents
+# and used to resolve the deprecated adk@ shortcut.
+ADK_RECIPE_DIRS = ("core/python", "contrib/python")
+ADK_RECIPE_INDEX_URLS = tuple(
+    f"{ADK_RECIPES_REPO_URL}/tree/main/{recipe_dir}" for recipe_dir in ADK_RECIPE_DIRS
+)
+# The adk-recipes manifest; not agents-cli-manifest.yaml.
+_RECIPE_MANIFEST_FILE = "manifest.yaml"
+AGENTS_CLI_MANIFEST_FILE = "agents-cli-manifest.yaml"
+
+# Marks a flat template: agent code in the template root rather than a package.
+FLAT_AGENT_DIRECTORY = "."
+# Folders whose agent files are fixtures or helpers, never the agent.
+# frontend/ and tests/ are also overwritten by the base template on render.
+_NON_AGENT_DIRECTORIES = frozenset(
+    {
+        "deployment",
+        "docs",
+        "eval",
+        "evals",
+        "frontend",
+        "notebooks",
+        "scripts",
+        "test",
+        "tests",
+    }
+)
 
 
 @dataclass
@@ -38,6 +75,18 @@ class RemoteTemplateSpec:
     template_path: str
     git_ref: str
     is_adk_samples: bool = False
+    # ``<ref>/<path>`` from a /tree/ URL; re-split on fetch as refs may contain slashes.
+    tree_path: str | None = None
+
+
+@dataclass(frozen=True)
+class AdkRecipe:
+    """An adk-recipes recipe offered in the scaffold browse menu."""
+
+    name: str
+    description: str
+    spec: str  # GitHub URL, usable as --agent
+    has_explicit_config: bool
 
 
 class FetchedTemplate(NamedTuple):
@@ -54,9 +103,23 @@ class FetchedTemplate(NamedTuple):
     repo_root: pathlib.Path
 
 
+class _ProjectFallbacks(TypedDict, total=False):
+    name: str
+    description: str
+
+
+class _TemplateFileConfig(NamedTuple):
+    declared: dict[str, Any]
+    fallbacks: _ProjectFallbacks
+
+
 def is_template_spec(value: str) -> bool:
     """True for a value naming a template to fetch rather than one this CLI ships."""
-    return value.startswith("local@") or parse_agent_spec(value) is not None
+    return (
+        value.startswith("local@")
+        or is_adk_shortcut(value)
+        or parse_agent_spec(value) is not None
+    )
 
 
 def parse_agent_spec(agent_spec: str) -> RemoteTemplateSpec | None:
@@ -68,19 +131,9 @@ def parse_agent_spec(agent_spec: str) -> RemoteTemplateSpec | None:
     Returns:
         RemoteTemplateSpec if remote template, None if local template
     """
-    # Check for local@ prefix
-    if agent_spec.startswith("local@"):
+    # Not remote: local@ paths, and the deprecated adk@ shortcut
+    if agent_spec.startswith("local@") or is_adk_shortcut(agent_spec):
         return None
-
-    # Check for adk@ shortcut
-    if agent_spec.startswith("adk@"):
-        sample_name = agent_spec[4:]  # Remove "adk@" prefix
-        return RemoteTemplateSpec(
-            repo_url="https://github.com/google/adk-samples",
-            template_path=f"python/agents/{sample_name}",
-            git_ref="main",
-            is_adk_samples=True,
-        )
 
     # GitHub /tree/ URL pattern
     tree_pattern = r"^(https?://[^/]+/[^/]+/[^/]+)/tree/([^/]+)/(.*)$"
@@ -93,6 +146,8 @@ def parse_agent_spec(agent_spec: str) -> RemoteTemplateSpec | None:
             repo_url=repo_url,
             template_path=template_path.strip("/"),
             git_ref=git_ref,
+            is_adk_samples=_is_adk_repo_url(repo_url),
+            tree_path=f"{git_ref}/{template_path}".strip("/"),
         )
 
     # General remote pattern: <repo_url>[/<path>][@<ref>]
@@ -113,14 +168,11 @@ def parse_agent_spec(agent_spec: str) -> RemoteTemplateSpec | None:
             template_path = path_parts[0]
             git_ref = path_parts[1]
 
-        # Check if this is the ADK samples repository
-        is_adk_samples = repo_url == "https://github.com/google/adk-samples"
-
         return RemoteTemplateSpec(
             repo_url=repo_url,
             template_path=template_path.strip("/"),
             git_ref=git_ref,
-            is_adk_samples=is_adk_samples,
+            is_adk_samples=_is_adk_repo_url(repo_url),
         )
 
     # GitHub shorthand: <org>/<repo>[/<path>][@<ref>]
@@ -132,17 +184,21 @@ def parse_agent_spec(agent_spec: str) -> RemoteTemplateSpec | None:
         template_path = match.group(3) or ""
         git_ref = match.group(4) or "main"
 
-        # Check if this is the ADK samples repository
-        is_adk_samples = org == "google" and repo == "adk-samples"
+        repo_url = f"https://github.com/{org}/{repo}"
 
         return RemoteTemplateSpec(
-            repo_url=f"https://github.com/{org}/{repo}",
+            repo_url=repo_url,
             template_path=template_path,
             git_ref=git_ref,
-            is_adk_samples=is_adk_samples,
+            is_adk_samples=_is_adk_repo_url(repo_url),
         )
 
     return None
+
+
+def is_adk_shortcut(agent_spec: str) -> bool:
+    """True for the deprecated ``adk@<name>`` shortcut (see ``adk_shortcut``)."""
+    return agent_spec.startswith(ADK_SHORTCUT_PREFIX)
 
 
 def check_and_execute_with_version_lock(
@@ -197,6 +253,14 @@ def fetch_remote_template(
         A ``FetchedTemplate`` with the fetched template directory, the top-level
         temporary directory to clean up, and the cloned repository root.
     """
+    if spec.tree_path:
+        git_ref, template_path = _split_tree_path(spec.repo_url, spec.tree_path)
+        spec = replace(spec, git_ref=git_ref, template_path=template_path)
+    if is_option_like(spec.git_ref):
+        raise RuntimeError(
+            f"Invalid git ref {spec.git_ref!r}: pass a branch, tag, or commit, "
+            "which cannot start with '-'."
+        )
     temp_dir = tempfile.mkdtemp(prefix="acli_remote_template_")
     temp_path = pathlib.Path(temp_dir)
     repo_path = temp_path / "repo"
@@ -214,6 +278,7 @@ def fetch_remote_template(
             "--single-branch",
             "--branch",
             spec.git_ref,
+            "--",
             clone_url,
             str(repo_path),
         ]
@@ -247,6 +312,7 @@ def fetch_remote_template(
                     "1",
                     "--branch",
                     spec.git_ref,
+                    "--",
                     clone_url,
                     str(repo_path),
                 ]
@@ -303,266 +369,243 @@ def fetch_remote_template(
         ) from e
 
 
-def _detect_flat_structure(template_dir: pathlib.Path) -> bool:
-    """Detect if template has a flat structure (agent code in root).
-
-    A flat structure means:
-    - agent.py exists directly in the template root
-    - No obvious agent subdirectory exists (like 'app/' or folder_name as package)
-
-    Args:
-        template_dir: Path to template directory
-
-    Returns:
-        True if template has flat structure, False otherwise
-    """
-    # Check if agent.py exists in root
-    agent_py_in_root = (template_dir / "agent.py").exists()
-    if not agent_py_in_root:
-        return False
-
-    # Check for common agent subdirectory patterns
-    folder_name = template_dir.name.replace("-", "_")
-    potential_agent_dirs = ["app", folder_name]
-
-    for subdir in potential_agent_dirs:
-        subdir_path = template_dir / subdir
-        if subdir_path.is_dir() and (subdir_path / "agent.py").exists():
-            # Found a proper agent subdirectory
-            return False
-
-    logging.debug(
-        "Detected flat structure in '%s': agent.py in root, no agent subdirectory",
-        template_dir,
-    )
-    return True
-
-
-def _get_source_agent_directory(template_dir: pathlib.Path) -> str:
-    """Return the subdirectory that holds a nested sample's ``agent.py``.
-
-    Samples following the Agent Starter Pack convention keep their code in
-    ``app/`` regardless of the folder name; others use a package named after the
-    folder. Preferring the folder-named package keeps behavior unchanged for
-    samples that already template into one directory, and falls back to ``app``
-    so ``app``-convention samples (e.g. deep-search) template into the directory
-    they actually reference — instead of splitting into two.
-
-    Args:
-        template_dir: Path to template directory
-
-    Returns:
-        The detected package directory name, defaulting to the folder-derived
-        name when neither candidate contains ``agent.py``.
-    """
-    folder_pkg = template_dir.name.replace("-", "_")
-    for candidate in (folder_pkg, "app"):
-        if (template_dir / candidate / "agent.py").exists():
-            return candidate
-    return folder_pkg
-
-
-def _infer_agent_directory_for_adk(
-    template_dir: pathlib.Path, is_adk_sample: bool
-) -> dict[str, Any]:
-    """Infer agent configuration for ADK samples only using Python conventions.
-
-    Args:
-        template_dir: Path to template directory
-        is_adk_sample: Whether this is an ADK sample
-
-    Returns:
-        Dictionary with inferred configuration, or empty dict if not ADK sample
-    """
-    if not is_adk_sample:
-        return {}
-
-    # Check for flat structure (agent code in root)
-    is_flat = _detect_flat_structure(template_dir)
-
-    # Convert folder name to Python package convention (hyphens to underscores)
-    folder_name = template_dir.name
-    folder_pkg = folder_name.replace("-", "_")
-
-    if is_flat:
-        logging.debug(
-            "Flat structure detected: source is '.', target agent_directory is '%s'",
-            folder_pkg,
-        )
-        return {
-            "settings": {
-                "agent_directory": folder_pkg,
-                "source_agent_directory": ".",  # Special value for flat structure
-            },
-            "has_explicit_config": False,
-            "is_flat_structure": True,
-        }
-
-    # Nested structure: target the sample's actual package directory so the
-    # base-template render and the remote overlay land in the same directory.
-    # Deriving the target from the folder name while the sample ships its code
-    # in `app/` produced two agent directories.
-    agent_directory = _get_source_agent_directory(template_dir)
-    logging.debug(
-        "Inferred agent_directory '%s' from the sample's package layout for "
-        "ADK sample '%s'",
-        agent_directory,
-        folder_name,
-    )
-
-    return {
-        "settings": {
-            "agent_directory": agent_directory,
-        },
-        "has_explicit_config": False,
-    }
-
-
 def load_remote_template_config(
     template_dir: pathlib.Path,
     cli_overrides: dict[str, Any] | None = None,
-    is_adk_sample: bool = False,
 ) -> dict[str, Any]:
-    """Load template configuration from remote template's .template/templateconfig.yaml,
-    agents-cli-manifest.yaml, or legacy [tool.agents-cli] section in pyproject.toml
-    with CLI overrides.
+    """Build a remote template's config.
 
-    CLI overrides take precedence over all other sources. For ADK samples without
-    explicit config, uses smart inference for agent directory naming.
+    Starts from the config file the template ships, resolves the agent directory
+    when it declares none, then applies CLI overrides (highest precedence).
 
-    Args:
-        template_dir: Path to template directory
-        cli_overrides: Configuration overrides from CLI (takes highest precedence)
-        is_adk_sample: Whether this is an ADK sample (enables smart inference)
-
-    Returns:
-        Template configuration dictionary with merged sources
+    Raises:
+        click.ClickException: If templateconfig.yaml is invalid, a config
+            file or its settings is not a mapping, or pyproject.toml's
+            [tool.agents-cli] is not a table.
     """
-    config: dict[str, Any] = {}
-    has_explicit_config = False
-
-    # Start with defaults
-    defaults = {
+    cli_overrides = cli_overrides or {}
+    file_config = _read_template_file_config(template_dir)
+    config: dict[str, Any] = {
         "base_template": "adk",
         "name": template_dir.name,
         "description": "",
-        "agent_directory": "app",  # Default for non-ADK samples
+        "agent_directory": "app",
+        **file_config.fallbacks,
+        **file_config.declared,
     }
-    config.update(defaults)
+    settings = config.get("settings")
+    if settings is None:  # missing, or an empty `settings:` key
+        settings = config["settings"] = {}
+    elif not isinstance(settings, dict):
+        raise click.ClickException(
+            f"settings in {template_dir.name}'s agents-cli config must be a mapping "
+            f"of keys to values, not a {type(settings).__name__}."
+        )
 
-    # Load from .template/templateconfig.yaml, agents-cli-manifest.yaml, or pyproject.toml
-    template_config_path = template_dir / ".template" / "templateconfig.yaml"
-    manifest_path = template_dir / "agents-cli-manifest.yaml"
+    cli_settings = cli_overrides.get("settings")
+    cli_sets_agent_directory = isinstance(cli_settings, dict) and bool(
+        cli_settings.get("agent_directory")
+    )
+    language = settings.get("language", "python")
+    template_agent_directory = settings.get("agent_directory")
+    if not template_agent_directory and cli_sets_agent_directory:
+        # The CLI picks the target; only flatness is still needed, so skip the search.
+        template_agent_directory = _conventional_agent_directory(
+            template_dir, get_language_config(language)["agent_file"]
+        )
+    elif not template_agent_directory:
+        template_agent_directory = resolve_agent_directory(template_dir, language)
+        # Left unset when nothing is found, so the base template's
+        # agent_directory (e.g. adk_java's src/main/java) is inherited.
+        if template_agent_directory is not None:
+            settings["agent_directory"] = template_agent_directory
+
+    # Kept apart from settings.agent_directory, which a CLI override replaces:
+    # a flat template is copied into whatever target directory the CLI picks.
+    config["is_flat_structure"] = template_agent_directory == FLAT_AGENT_DIRECTORY
+    config["has_explicit_config"] = bool(file_config.declared)
+    return merge_template_configs(config, cli_overrides)
+
+
+def resolve_agent_directory(template_dir: pathlib.Path, language: str) -> str | None:
+    """Return the directory holding the template's agent file, or None.
+
+    Resolution order, first match wins:
+      1. ``app/``
+      2. the template folder name in snake_case
+      3. the template root, returned as ``FLAT_AGENT_DIRECTORY``
+      4. the shallowest valid directory anywhere outside ``_NON_AGENT_DIRECTORIES``,
+         then alphabetical
+      5. None, so the caller keeps the base template's agent_directory
+    """
+    agent_file = get_language_config(language)["agent_file"]
+    conventional = _conventional_agent_directory(template_dir, agent_file)
+    if conventional is not None:
+        return conventional
+
+    found, skipped = _find_agent_directories(template_dir, agent_file, language)
+    if not found and skipped:
+        logging.warning(
+            "Ignored %s in %s: an agent directory must be a top-level package "
+            "with a valid %s name, so the project falls back to the base "
+            "template's agent directory. Move the agent to a top-level folder.",
+            ", ".join(f"{d}/{agent_file}" for d in skipped),
+            template_dir.name,
+            get_language_config(language)["display_name"],
+        )
+    if found:
+        if len(found) > 1:
+            logging.warning(
+                "Found %d %s files in %s; using %s/%s. Pass --agent-directory to "
+                "pick another.",
+                len(found),
+                agent_file,
+                template_dir.name,
+                found[0],
+                agent_file,
+            )
+        return found[0]
+
+    logging.debug("No %s found in %s", agent_file, template_dir)
+    return None
+
+
+def _conventional_agent_directory(
+    template_dir: pathlib.Path, agent_file: str
+) -> str | None:
+    """Steps 1-3 of ``resolve_agent_directory``: the checks that need no search."""
+    folder_pkg = template_dir.name.replace("-", "_")
+    for candidate in ("app", folder_pkg):
+        if (template_dir / candidate / agent_file).is_file():
+            logging.debug("Found %s in %s/", agent_file, candidate)
+            return candidate
+
+    if (template_dir / agent_file).is_file():
+        logging.debug("Flat structure: %s in the template root", agent_file)
+        return FLAT_AGENT_DIRECTORY
+    return None
+
+
+def _find_agent_directories(
+    template_dir: pathlib.Path, agent_file: str, language: str
+) -> tuple[list[str], list[str]]:
+    """``(valid, skipped)`` directories holding ``agent_file``, each in search order."""
+    # Lazy import to avoid circular dependency
+    from .template import validate_agent_directory_name
+
+    found = []
+    skipped = []
+    for directory, files in walk_source_tree(template_dir, _NON_AGENT_DIRECTORIES):
+        if agent_file not in files or directory == template_dir:
+            continue
+        relative = directory.relative_to(template_dir).as_posix()
+        try:
+            validate_agent_directory_name(relative, language=language)
+        except ValueError:
+            logging.debug(
+                "Skipping %s/%s: %s is not a valid agent directory",
+                relative,
+                agent_file,
+                relative,
+            )
+            skipped.append(relative)
+            continue
+        found.append(relative)
+
+    def search_order(path: str) -> tuple[int, str]:
+        return path.count("/"), path
+
+    return sorted(found, key=search_order), sorted(skipped, key=search_order)
+
+
+def _read_template_file_config(template_dir: pathlib.Path) -> _TemplateFileConfig:
+    templateconfig_path = template_dir / ".template" / "templateconfig.yaml"
+    manifest_path = template_dir / AGENTS_CLI_MANIFEST_FILE
     pyproject_path = template_dir / "pyproject.toml"
 
-    if template_config_path.exists():
-        try:
-            import yaml
+    if templateconfig_path.exists():
+        return _TemplateFileConfig(_read_templateconfig(templateconfig_path), {})
+    if manifest_path.exists():
+        return _TemplateFileConfig(_read_agents_cli_manifest(manifest_path), {})
+    if pyproject_path.exists():
+        return _read_pyproject_config(pyproject_path)
+    # adk-recipes recipes ship manifest.yaml and rely on agent directory resolution.
+    if not (template_dir / _RECIPE_MANIFEST_FILE).is_file():
+        logging.warning(
+            "%s declares no agents-cli configuration, so it is treated as an ADK "
+            "template. Add .template/templateconfig.yaml to say otherwise.",
+            template_dir.name,
+        )
+    return _TemplateFileConfig({}, {})
 
-            with open(template_config_path, encoding="utf-8") as f:
-                template_config = yaml.safe_load(f) or {}
-            has_explicit_config = bool(template_config)
-            if template_config:
-                config.update(template_config)
-                logging.debug(
-                    "Found explicit .template/templateconfig.yaml configuration"
-                )
-        except Exception as e:
-            # Falling through would treat the template as an ADK sample and
-            # render a different project than the one it declares. ClickException
-            # so the commands that surface it print the template author's typo
-            # as an error rather than a traceback.
-            raise click.ClickException(
-                f"{template_config_path.name} is not valid YAML: {e}"
-            ) from e
-    elif manifest_path.exists():
-        try:
-            import yaml
 
-            with open(manifest_path, encoding="utf-8") as f:
-                manifest_config = yaml.safe_load(f) or {}
-            has_explicit_config = bool(manifest_config)
-            if manifest_config:
-                config.update(manifest_config)
-                logging.debug("Found explicit agents-cli-manifest.yaml configuration")
-        except Exception as e:
-            logging.error(f"Error loading agents-cli-manifest.yaml config: {e}")
-    elif pyproject_path.exists():
-        try:
-            with open(pyproject_path, "rb") as f:
-                pyproject_data = tomllib.load(f)
+def _read_templateconfig(path: pathlib.Path) -> dict[str, Any]:
+    import yaml
 
-            # Extract the agents-cli configuration
-            toml_config = pyproject_data.get("tool", {}).get("agents-cli", {})
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
+        # Falling back would render a different project than the template declares.
+        raise click.ClickException(f"{path.name} is not valid YAML: {e}") from e
+    return _validate_yaml_mapping(path, data)
 
-            # Fallback to [project] fields if not specified in agents-cli section
-            project_info = pyproject_data.get("project", {})
 
-            # Track if we have explicit configuration
-            has_explicit_config = bool(toml_config)
+def _read_agents_cli_manifest(path: pathlib.Path) -> dict[str, Any]:
+    import yaml
 
-            # Apply pyproject.toml configuration (overrides defaults)
-            if toml_config:
-                config.update(toml_config)
-                logging.debug("Found explicit [tool.agents-cli] configuration")
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
+        logging.error("Could not load %s config: %s", path.name, e)
+        return {}
+    data = _validate_yaml_mapping(path, raw)
+    # A project's manifest records agent_directory at the top level; rendering
+    # reads it from settings. Any other settings value is left for the caller
+    # to reject.
+    settings = data.get("settings")
+    if data.get("agent_directory") and (settings is None or isinstance(settings, dict)):
+        data["settings"] = {
+            "agent_directory": data["agent_directory"],
+            **(settings or {}),
+        }
+    return data
 
-            # Apply [project] fallbacks if not already set
-            if "name" not in toml_config and "name" in project_info:
-                config["name"] = project_info["name"]
 
-            if "description" not in toml_config and "description" in project_info:
-                config["description"] = project_info["description"]
+def _validate_yaml_mapping(path: pathlib.Path, data: Any) -> dict[str, Any]:
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise click.ClickException(
+            f"{path.name} must be a mapping of keys to values, not a "
+            f"{type(data).__name__}."
+        )
+    return data
 
-            logging.debug("Loaded template config from %s", pyproject_path)
-        except Exception as e:
-            logging.error(f"Error loading pyproject.toml config: {e}")
-    else:
-        # No config file found
-        if is_adk_sample:
-            logging.debug(
-                "No config file found for ADK sample %s, will use inference",
-                template_dir.name,
-            )
-        else:
-            logging.warning(
-                "%s declares no agents-cli configuration, so it is treated as an ADK "
-                "template. Add .template/templateconfig.yaml to say otherwise.",
-                template_dir.name,
-            )
 
-    # Apply ADK inference if no explicit config and this is an ADK sample
-    if not has_explicit_config and is_adk_sample:
-        try:
-            inferred_config = _infer_agent_directory_for_adk(template_dir, is_adk_sample)
-            config.update(inferred_config)
-            logging.debug("Applied ADK inference for template without explicit config")
-        except Exception as e:
-            logging.warning(f"Failed to apply ADK inference for {template_dir}: {e}")
-            # Continue with default configuration
-
-    # Detect flat structure for all remote templates (not just ADK samples)
-    # This handles cases where agent.py is in root with no subdirectory
-    if not has_explicit_config and not is_adk_sample:
-        if _detect_flat_structure(template_dir):
-            folder_name = template_dir.name.replace("-", "_")
-            config.setdefault("settings", {})
-            config["settings"]["agent_directory"] = folder_name
-            config["settings"]["source_agent_directory"] = "."
-            config["is_flat_structure"] = True
-            logging.debug(
-                "Detected flat structure for non-ADK template: source='.', target='%s'",
-                folder_name,
-            )
-
-    # Add metadata about configuration source
-    config["has_explicit_config"] = bool(has_explicit_config)
-
-    # Apply CLI overrides (highest precedence) using deep merge
-    if cli_overrides:
-        config = merge_template_configs(config, cli_overrides)
-        logging.debug("Applied CLI overrides: %s", cli_overrides)
-
-    return config
+def _read_pyproject_config(path: pathlib.Path) -> _TemplateFileConfig:
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except Exception as e:
+        logging.error("Could not load pyproject.toml config: %s", e)
+        return _TemplateFileConfig({}, {})
+    tool = data.get("tool")
+    declared = tool.get("agents-cli", {}) if isinstance(tool, dict) else {}
+    if not isinstance(declared, dict):
+        raise click.ClickException(
+            f"[tool.agents-cli] in {path.name} must be a table of config keys."
+        )
+    project = data.get("project")
+    if not isinstance(project, dict):
+        project = {}
+    fallbacks: _ProjectFallbacks = {}
+    if isinstance(project.get("name"), str):
+        fallbacks["name"] = project["name"]
+    if isinstance(project.get("description"), str):
+        fallbacks["description"] = project["description"]
+    return _TemplateFileConfig(declared=declared, fallbacks=fallbacks)
 
 
 def get_base_template_name(config: dict[str, Any]) -> str:
@@ -611,91 +654,97 @@ def merge_template_configs(
     return deep_merge(merged_config, remote_config)
 
 
-def discover_adk_agents(repo_path: pathlib.Path) -> dict[int, dict[str, Any]]:
-    """Discover and load all ADK agents from a repository with inference support.
+def discover_adk_agents(repo_path: pathlib.Path) -> dict[int, AdkRecipe]:
+    """Discover and load the Python recipes in a clone of adk-recipes.
+
+    Scans every ``ADK_RECIPE_DIRS`` directory, skipping recipes whose
+    ``manifest.yaml`` marks them inactive.
 
     Args:
-        repo_path: Path to the cloned ADK samples repository
+        repo_path: Path to the cloned adk-recipes repository
 
     Returns:
-        Dictionary mapping agent numbers to agent info with keys:
-        - name: Agent display name
-        - description: Agent description
-        - path: Relative path from repo root
-        - spec: adk@ specification string
-        - has_explicit_config: Whether agent has explicit configuration
+        Dictionary mapping menu numbers (from 1) to recipes.
     """
-    import logging
+    all_agents = []
+    for recipe_dir in _recipe_dirs(repo_path):
+        agent = _load_recipe(repo_path, recipe_dir)
+        if agent is not None:
+            all_agents.append(agent)
+    # Sort agents: explicit config first, then inferred (both alphabetically within their groups)
+    all_agents.sort(key=lambda x: (not x.has_explicit_config, x.name.lower()))
+    return dict(enumerate(all_agents, 1))
 
-    adk_agents = {}
 
-    # Search specifically for agents in python/agents/* directories
-    agents_dir = repo_path / "python" / "agents"
-    logging.debug("Looking for agents in: %s", agents_dir)
-    if agents_dir.exists():
-        all_items = list(agents_dir.iterdir())
-        logging.debug(
-            "Found items in agents directory: %s", [item.name for item in all_items]
+def _recipe_dirs(repo_path: pathlib.Path) -> list[pathlib.Path]:
+    """Every recipe directory under ADK_RECIPE_DIRS, skipping hidden ones."""
+    recipe_dirs = []
+    for index_dir in ADK_RECIPE_DIRS:
+        index_path = repo_path / index_dir
+        logging.debug("Looking for recipes in: %s", index_path)
+        if not index_path.is_dir():
+            continue
+        recipe_dirs.extend(
+            path
+            for path in sorted(index_path.iterdir())
+            if path.is_dir() and not path.name.startswith(".")
         )
-
-        # Collect all agents first, then sort by configuration type
-        all_agents = []
-
-        for agent_dir in sorted(agents_dir.iterdir()):
-            if not agent_dir.is_dir():
-                logging.debug("Skipping non-directory: %s", agent_dir.name)
-                continue
-            logging.debug("Processing agent directory: %s", agent_dir.name)
-
-            try:
-                # Load configuration with ADK inference support
-                config = load_remote_template_config(
-                    template_dir=agent_dir, is_adk_sample=True
-                )
-
-                agent_name = config.get("name", agent_dir.name)
-                description = config.get("description", "")
-                has_explicit_config = config.get("has_explicit_config", False)
-
-                # Get the relative path from repo root
-                relative_path = agent_dir.relative_to(repo_path)
-                agent_spec_name = agent_dir.name
-
-                agent_info = {
-                    "name": agent_name,
-                    "description": description,
-                    "path": str(relative_path),
-                    "spec": f"adk@{agent_spec_name}",
-                    "has_explicit_config": has_explicit_config,
-                }
-                all_agents.append(agent_info)
-
-            except Exception as e:
-                logging.warning(f"Could not load agent from {agent_dir}: {e}")
-
-        # Sort agents: explicit config first, then inferred (both alphabetically within their groups)
-        all_agents.sort(key=lambda x: (not x["has_explicit_config"], x["name"].lower()))
-
-        # Convert to numbered dictionary
-        for i, agent_info in enumerate(all_agents, 1):
-            adk_agents[i] = agent_info
-
-    return adk_agents
+    return recipe_dirs
 
 
-def display_adk_caveat_if_needed(agents: dict[int, dict[str, Any]]) -> None:
+def _load_recipe(repo_path: pathlib.Path, recipe_dir: pathlib.Path) -> AdkRecipe | None:
+    """The browse-menu entry for one recipe; None if inactive or unloadable."""
+    manifest = _read_recipe_manifest(recipe_dir)
+    if manifest.get("status") == "inactive":
+        logging.debug("Skipping inactive recipe: %s", recipe_dir.name)
+        return None
+
+    # The menu needs no agent directory, so skip load_remote_template_config's search.
+    try:
+        file_config = _read_template_file_config(recipe_dir)
+    except click.ClickException as e:
+        logging.warning("Could not load agent from %s: %s", recipe_dir, e.message)
+        return None
+    declared = file_config.declared
+
+    relative_path = recipe_dir.relative_to(repo_path).as_posix()
+    return AdkRecipe(
+        name=declared.get("name") or file_config.fallbacks.get("name") or recipe_dir.name,
+        description=declared.get("description")
+        or file_config.fallbacks.get("description")
+        or manifest.get("description", ""),
+        spec=f"{ADK_RECIPES_REPO_URL}/tree/main/{relative_path}",
+        has_explicit_config=bool(declared),
+    )
+
+
+def _read_recipe_manifest(recipe_dir: pathlib.Path) -> dict[str, Any]:
+    """The recipe's manifest.yaml; empty when missing or unreadable."""
+    path = recipe_dir / _RECIPE_MANIFEST_FILE
+    if not path.is_file():
+        return {}
+    import yaml
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError) as e:
+        logging.warning("Could not read %s: %s", path, e)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def display_adk_caveat_if_needed(agents: dict[int, AdkRecipe]) -> None:
     """Display helpful note for agents that use inference.
 
     Args:
-        agents: Dictionary of agent info from discover_adk_agents
+        agents: Recipes from discover_adk_agents
     """
     console = Console()
-    inferred_agents = [
-        a for a in agents.values() if not a.get("has_explicit_config", True)
-    ]
+    inferred_agents = [a for a in agents.values() if not a.has_explicit_config]
     if inferred_agents:
         console.print(
-            "\n[blue]ℹ️  Note: Agents marked with * are templated using Agents CLI heuristics for ADK samples.[/]"
+            "\n[blue]ℹ️  Note: Agents marked with * are templated using Agents CLI heuristics for ADK recipes.[/]"
         )
         console.print(
             "[dim]   Agents CLI attempts to create a working codebase, but you'll need to follow the generated README for complete setup.[/]"
@@ -733,3 +782,42 @@ def parse_acli_version_from_lock(
         logging.warning(f"Error parsing uv.lock file {uv_lock_path}: {e}")
 
     return None
+
+
+def _is_adk_repo_url(repo_url: str) -> bool:
+    """True for github.com/google/adk-recipes (or adk-samples), in any URL form."""
+    parsed = urllib.parse.urlparse(repo_url)
+    host = parsed.netloc.lower().removeprefix("www.")
+    path = parsed.path.strip("/").lower().removesuffix(".git")
+    org, _, repo = path.partition("/")
+    return host == "github.com" and org == "google" and repo in _ADK_REPO_NAMES
+
+
+def _split_tree_path(repo_url: str, tree_path: str) -> tuple[str, str]:
+    """Split on the remote's longest branch or tag prefix, else on the first segment."""
+    first, _, rest = tree_path.partition("/")
+    if not rest:
+        return first, ""
+    from google.agents.cli._runner import run_resolved
+
+    result = run_resolved(
+        ["git", "ls-remote", "--heads", "--tags", repo_url],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+    if result.returncode != 0:
+        logging.debug("git ls-remote %s failed: %s", repo_url, result.stderr.strip())
+        return first, rest
+    refs: set[str] = set()
+    for line in result.stdout.splitlines():
+        name = line.partition("\t")[2].removesuffix("^{}")
+        for prefix in ("refs/heads/", "refs/tags/"):
+            if name.startswith(prefix):
+                refs.add(name.removeprefix(prefix))
+    matches = [r for r in refs if tree_path == r or tree_path.startswith(f"{r}/")]
+    if not matches:
+        return first, rest
+    ref = max(matches, key=lambda name: len(name))
+    return ref, tree_path.removeprefix(ref).strip("/")

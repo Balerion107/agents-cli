@@ -21,7 +21,6 @@ import os
 import time
 from pathlib import Path
 
-import click
 import yaml
 
 # Pin the skills npm package to avoid executing an unverified version.
@@ -157,6 +156,35 @@ def get_installed_skills() -> list[dict] | None:
         return None
 
 
+def find_parent_workspace_skills(start: Path) -> Path | None:
+    """Return the nearest parent of ``start`` with workspace-scope agents-cli skills.
+
+    ``agents-cli setup --workspace`` installs skills relative to the directory it
+    ran in, and coding agents started in a subdirectory (e.g. a project created
+    there) may not load them. Returns ``None`` when ``start`` has its own
+    workspace skills or no parent has any. The home directory is skipped because
+    ``~/.agents/skills`` is the global store, which agents load from anywhere.
+    """
+    start = start.resolve()
+    if _has_workspace_skills(start):
+        return None
+    home = Path.home().resolve()
+    for parent in start.parents:
+        if parent != home and _has_workspace_skills(parent):
+            return parent
+    return None
+
+
+def _has_workspace_skills(directory: Path) -> bool:
+    skills_dir = directory / ".agents" / "skills"
+    try:
+        return any(
+            (d / "SKILL.md").is_file() for d in skills_dir.glob("google-agents-cli-*")
+        )
+    except OSError:
+        return False
+
+
 def _is_ci() -> bool:
     """Return True when running in a CI/automation environment.
 
@@ -214,10 +242,10 @@ def check_skills_version() -> None:
         return
 
     lines = [f"  - {name} (v{ver})" for name, ver in mismatched.items()]
-    click.echo(
-        f"\n⚠️  Skills version mismatch — CLI is v{__version__}, "
-        f"but {len(mismatched)} skill(s) differ:\n"
-        + "\n".join(lines)
-        + "\n   Run 'agents-cli update' to sync.\n",
-        err=True,
+    logging.warning(
+        "Skills version mismatch — CLI is v%s, but %d skill(s) differ:\n%s\n"
+        "Run 'agents-cli update' to sync.",
+        __version__,
+        len(mismatched),
+        "\n".join(lines),
     )

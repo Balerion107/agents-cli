@@ -17,6 +17,7 @@
 import datetime
 import functools
 import json
+import logging
 import os
 import re
 from collections.abc import Callable
@@ -330,8 +331,10 @@ def prepare_eval_metrics(
             and name.lower() not in supported
         }
         if overlapping:
-            console.print(
-                f"[bold yellow]Warning:[/bold yellow] Custom metric [cyan]{', '.join(sorted(overlapping))}[/cyan] shares name with a built-in evaluation metric. The custom definition will override the built-in metric."
+            logging.warning(
+                "Custom metric %s shares name with a built-in evaluation metric. "
+                "The custom definition will override the built-in metric.",
+                ", ".join(sorted(overlapping)),
             )
 
     requested_metrics = []
@@ -469,9 +472,7 @@ def save_evaluation_artifacts(
             rows = _sdk_compat.dataset_rows(evaluation_dataset)
             metadata_dataset.extend(rows)
     except Exception as e:
-        console.print(
-            f"[yellow]Warning: Could not extract dataset metadata: {e}[/yellow]"
-        )
+        logging.warning("Could not extract dataset metadata: %s", e)
 
     if not dumpable.get("metadata"):
         dumpable["metadata"] = {}
@@ -498,12 +499,6 @@ def save_evaluation_artifacts(
                 f"[green]Saved HTML results to {os.path.abspath(html_path)}[/green]"
             )
         else:
-            console.print(
-                "[yellow]Warning: Could not generate HTML results "
-                "(JSON results were saved).[/yellow]"
-            )
+            logging.warning("Could not generate HTML results (JSON results were saved).")
     except Exception as e:
-        console.print(
-            f"[yellow]Warning: Failed to save HTML results: {e} "
-            "(JSON results were saved).[/yellow]"
-        )
+        logging.warning("Failed to save HTML results: %s (JSON results were saved).", e)

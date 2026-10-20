@@ -21,7 +21,12 @@ from pathlib import Path
 
 import click
 
-from google.agents.cli._output import Console
+from google.agents.cli._output import (
+    INTERACTIVE_FIX,
+    Console,
+    configure_logging,
+    programmatic_mode_error,
+)
 from google.agents.cli._project import chdir_project_root, read_project_config
 from google.agents.cli._tools import (
     ToolNotFoundError,
@@ -120,7 +125,7 @@ def check_github_scopes(cicd_runner: str) -> None:
         console.print("✅ GitHub CLI scopes verified")
 
     except subprocess.CalledProcessError:
-        console.print("⚠️ Could not verify GitHub CLI scopes", style="yellow")
+        logging.warning("Could not verify GitHub CLI scopes")
 
 
 def prompt_gh_cli_installation() -> None:
@@ -164,7 +169,7 @@ def setup_git_repository(config: ProjectConfig) -> str:
     except subprocess.CalledProcessError:
         try:
             run_command(
-                ["git", "remote", "add", "origin", remote_url],
+                ["git", "remote", "add", "--", "origin", remote_url],
                 capture_output=True,
                 check=True,
             )
@@ -522,18 +527,20 @@ def setup_cicd(
                 "Enter your staging project ID (where tests will be run)", type=str
             )
         else:
-            raise click.UsageError(
-                "--staging-project is required in programmatic mode. "
-                "Pass -i / --interactive for interactive mode or --staging-project to specify."
+            raise programmatic_mode_error(
+                "--staging-project is required",
+                ("--staging-project <id>", "the project where tests run"),
+                INTERACTIVE_FIX,
             )
 
     if prod_project is None:
         if interactive:
             prod_project = click.prompt("Enter your production project ID", type=str)
         else:
-            raise click.UsageError(
-                "--prod-project is required in programmatic mode. "
-                "Pass -i / --interactive for interactive mode or --prod-project to specify."
+            raise programmatic_mode_error(
+                "--prod-project is required",
+                ("--prod-project <id>", "the production project"),
+                INTERACTIVE_FIX,
             )
 
     # If cicd_project is not provided, default to prod_project
@@ -591,7 +598,7 @@ def setup_cicd(
             return
 
     if debug:
-        logging.basicConfig(level=logging.DEBUG)
+        configure_logging(logging.DEBUG)
         console.print("> Debug mode enabled")
         logging.debug("Detected CI/CD runner: %s", cicd_runner)
 
@@ -599,7 +606,7 @@ def setup_cicd(
     if not check_gh_cli_installed():
         prompt_gh_cli_installation()
     if not is_github_authenticated():
-        console.print("\n⚠️ Not authenticated with GitHub CLI", style="yellow")
+        logging.warning("Not authenticated with GitHub CLI")
         handle_github_authentication(interactive=interactive)
     else:
         console.print("✅ GitHub CLI authentication verified")
@@ -621,9 +628,10 @@ def setup_cicd(
     else:
         # Non-interactive: require --repository-name, auto-detect owner if missing
         if not repository_name:
-            raise click.UsageError(
-                "--repository-name is required in programmatic mode. "
-                "Pass -i / --interactive for interactive mode or --repository-name to specify."
+            raise programmatic_mode_error(
+                "--repository-name is required",
+                ("--repository-name <name>", "the GitHub repository to connect"),
+                INTERACTIVE_FIX,
             )
         if not repository_owner:
             repository_owner = run_command(
@@ -692,10 +700,14 @@ def setup_cicd(
         else:
             # Programmatic mode: require both --github-pat or $GH_TOKEN/$GITHUB_TOKEN and --github-app-installation-id
             if not github_pat or not github_app_installation_id:
-                raise click.UsageError(
-                    "--github-pat (or at least one of $GH_TOKEN or $GITHUB_TOKEN environment variables) and --github-app-installation-id are required for "
-                    "Cloud Build in programmatic mode. Pass -i / --interactive for "
-                    "interactive OAuth flow."
+                raise programmatic_mode_error(
+                    "--github-pat and --github-app-installation-id are required for Cloud Build",
+                    (
+                        "--github-pat <token>",
+                        "with --github-app-installation-id <id>; "
+                        "$GH_TOKEN or $GITHUB_TOKEN can stand in for --github-pat",
+                    ),
+                    ("-i, --interactive", "connect GitHub through the OAuth flow"),
                 )
 
             console.print(

@@ -250,7 +250,11 @@ def cleanup_agent_runtime_sessions() -> None:
     yield  # Run tests first
 
     # Cleanup after tests complete
-    from agentplatform import agent_engines
+    import agentplatform
+
+    from {{cookiecutter.agent_directory}}.app_utils.services import (
+        agent_runtime_location,
+    )
 
     try:
         # Use same environment variable as server, default to project name
@@ -258,16 +262,18 @@ def cleanup_agent_runtime_sessions() -> None:
         agent_name = os.environ.get("AGENT_ENGINE_SESSION_NAME", default_agent_name)
 
         # Find and delete Agent Runtimes with this name
-        existing_agents = list(agent_engines.list(filter=f"display_name={agent_name}"))
+        client = agentplatform.Client(location=agent_runtime_location())
+        existing_agents = list(
+            client.runtimes.list(config={"filter": f"display_name={agent_name}"})
+        )
 
         for agent_runtime in existing_agents:
+            name = agent_runtime.api_resource.name
             try:
-                agent_engines.delete(resource_name=agent_runtime.name)
-                logger.info(f"Cleaned up Agent Runtime: {agent_runtime.name}")
+                client.runtimes.delete(name=name, force=True)
+                logger.info(f"Cleaned up Agent Runtime: {name}")
             except Exception as e:
-                logger.warning(
-                    f"Failed to cleanup Agent Runtime {agent_runtime.name}: {e}"
-                )
+                logger.warning(f"Failed to cleanup Agent Runtime {name}: {e}")
     except Exception as e:
         logger.warning(f"Failed to cleanup Agent Runtime sessions: {e}")
 {%- endif %}

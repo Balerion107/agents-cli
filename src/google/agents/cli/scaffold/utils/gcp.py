@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import sys
 import time
@@ -163,10 +164,7 @@ def enable_vertex_ai_api(project_id: str, context: str | None = None) -> bool:
             time.sleep(check_interval)
             console.print("⏳ Still waiting for API propagation...")
 
-        console.print(
-            "⚠️ API propagation took longer than expected, but continuing...",
-            style="yellow",
-        )
+        logging.warning("API propagation took longer than expected, but continuing...")
         return True
 
     except subprocess.CalledProcessError as e:

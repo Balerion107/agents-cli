@@ -16,7 +16,10 @@
 
 import fnmatch
 import ntpath
+import os
+import pathlib
 import sys
+from collections.abc import Iterator
 from pathlib import PureWindowsPath
 
 # Directories/files to exclude when copying a project tree (backups, local
@@ -116,6 +119,19 @@ def source_ignore_patterns(dir: str, files: list[str]) -> set[str]:
     # Linux and macOS, while a credential is dropped in any letter case.
     standard = set(_matching(files, STANDARD_IGNORE_PATTERNS))
     return standard | {f for f in files if is_secret_file(f)}
+
+
+def walk_source_tree(
+    root: pathlib.Path, skip_dirs: frozenset[str]
+) -> Iterator[tuple[pathlib.Path, list[str]]]:
+    """Yield ``(directory, file names)`` under *root*, skipping hidden, ignored and *skip_dirs* dirs."""
+    for current, dirs, files in os.walk(root):
+        dirs[:] = sorted(
+            d
+            for d in dirs
+            if not d.startswith(".") and not is_ignored_name(d) and d not in skip_dirs
+        )
+        yield pathlib.Path(current), files
 
 
 def _matching(files: list[str], patterns: frozenset[str]) -> list[str]:

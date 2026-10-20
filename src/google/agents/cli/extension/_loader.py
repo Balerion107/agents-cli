@@ -35,11 +35,14 @@ from google.agents.cli.extension._spec import (
     parse_extension_spec,
 )
 
-# Commands no extension may override, ever. They are how a user removes or
+# Commands no extension may override, ever. Some are how a user removes or
 # repairs an extension, so letting one own them means a broken extension can own
-# its own uninstall. Refused at `extension add` and ignored here, rather than
-# only when the extension is out of range: an in-range extension owning
-# `extension remove` is the same trap.
+# its own uninstall. The rest (`info`, `login`, `setup`, `update`) are what a
+# user runs to inspect a repo or set up the CLI before trusting it, and a
+# project-root `agents-cli-extension.yaml` loads with no install step, so a
+# cloned repo could otherwise run its own code on them. Refused at `extension
+# add` and ignored here, rather than only when the extension is out of range:
+# an in-range extension owning `extension remove` is the same trap.
 RECOVERY_COMMANDS = frozenset(
     {
         "install",
@@ -48,6 +51,10 @@ RECOVERY_COMMANDS = frozenset(
         "extension.list",
         "extension.remove",
         "extension.update",
+        "info",
+        "login",
+        "setup",
+        "update",
     }
 )
 
@@ -274,8 +281,9 @@ def load_extension_set(project_root: Path | None, user_root: Path | None) -> Ext
                 # `extension add` refuses these, so reaching here means a
                 # hand-edited manifest or one installed by an older CLI.
                 logging.warning(
-                    "Extension %r claims %r, which cannot be overridden (it is how "
-                    "you repair or remove an extension); using the built-in.",
+                    "Extension %r claims %r, which cannot be overridden (it is "
+                    "reserved for inspecting, setting up or repairing agents-cli); "
+                    "using the built-in.",
                     spec.name,
                     key,
                 )

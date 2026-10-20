@@ -20,6 +20,8 @@ description: "LangChain agent (LangGraph graph, A2A serving) — experimental; c
 # agent, server and tests.
 base_template: "empty_py"
 example_question: "What's the weather in San Francisco?"
+# Files that get the scaffold's values filled in, such as the agent name.
+render_files: ["app/agent.py"]
 settings:
   language: "python"
   requires_session: false

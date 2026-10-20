@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import mimetypes
 import uuid
 from pathlib import Path
@@ -28,7 +29,7 @@ import click
 import httpx
 import requests
 from a2a.client import ClientConfig
-from a2a.types import Message, Part, Role, SendMessageRequest
+from a2a.types import Message, Part, Role, SendMessageRequest, TaskState, TaskStatus
 from a2a.utils.constants import (
     AGENT_CARD_WELL_KNOWN_PATH,
     PROTOCOL_VERSION_1_0,
@@ -334,17 +335,9 @@ def cmd_run(
     File references returned by URI are not downloaded.
     """
     if url and start_server:
-        click.secho(
-            "Warning: --start-server has no effect when using --url.",
-            fg="yellow",
-            err=True,
-        )
+        logging.warning("--start-server has no effect when using --url.")
     if url and otel_to_cloud:
-        click.secho(
-            "Warning: --otel-to-cloud has no effect when using --url.",
-            fg="yellow",
-            err=True,
-        )
+        logging.warning("--otel-to-cloud has no effect when using --url.")
 
     target = _resolve_dispatch_target(
         url=url,
@@ -570,11 +563,7 @@ def _save_inline_artifact(data_b64: str, mime_type: str | None) -> str | None:
     try:
         decoded = base64.urlsafe_b64decode(data_b64)
     except ValueError as exc:
-        click.secho(
-            f"Warning: could not decode inline {mime} artifact: {exc}",
-            err=True,
-            fg="yellow",
-        )
+        logging.warning("Could not decode inline %s artifact: %s", mime, exc)
         return None
 
     return _write_artifact(decoded, mime_type)
@@ -983,6 +972,24 @@ def _query_a2a(
     raise click.ClickException(f"Failed to fetch agent card:\n{detail}{hint}")
 
 
+# Final states that carry no reply. A canceled task is final too, and like a failed
+# one usually ends without an artifact, so it would otherwise print nothing.
+_A2A_FAILED_STATES = (
+    TaskState.TASK_STATE_FAILED,
+    TaskState.TASK_STATE_REJECTED,
+    TaskState.TASK_STATE_CANCELED,
+)
+
+
+def _a2a_failure_reason(status: TaskStatus) -> str | None:
+    """The agent's reason when an A2A task ended failed, rejected or canceled."""
+    if status.state not in _A2A_FAILED_STATES:
+        return None
+    reason = " ".join(p.text for p in status.message.parts if p.text)
+    state = TaskState.Name(status.state).removeprefix("TASK_STATE_").lower()
+    return reason or f"task {state}"
+
+
 async def _query_a2a_async(
     base_url: str,
     parts: list[Part],
@@ -1038,12 +1045,11 @@ async def _query_a2a_async(
             ) from exc
 
         if redirected:
-            click.secho(
-                "Warning: the agent card points at a different host "
-                f"({', '.join(redirected)}). Sending to {base_url} instead, "
-                "as given by --url.",
-                fg="yellow",
-                err=True,
+            logging.warning(
+                "The agent card points at a different host (%s). Sending to %s "
+                "instead, as given by --url.",
+                ", ".join(redirected),
+                base_url,
             )
 
         msg = Message(
@@ -1057,6 +1063,7 @@ async def _query_a2a_async(
         response_session_id = None
         artifacts: list[str] = []
         rendered_any = False
+        failure_shown = False
 
         def _render_a2a_parts(render_parts: list[Part]) -> None:
             """Print the agent tag only for parts that actually render, so an
@@ -1071,6 +1078,7 @@ async def _query_a2a_async(
                 rendered_any = True
 
         async for chunk in a2a_client.send_message(SendMessageRequest(message=msg)):
+            status = None
             if chunk.HasField("artifact_update"):
                 if not response_session_id and chunk.artifact_update.context_id:
                     response_session_id = chunk.artifact_update.context_id
@@ -1080,8 +1088,18 @@ async def _query_a2a_async(
                     response_session_id = chunk.task.context_id
                 for artifact in chunk.task.artifacts:
                     _render_a2a_parts(list(artifact.parts))
+                status = chunk.task.status
+            elif chunk.HasField("status_update"):
+                if not response_session_id and chunk.status_update.context_id:
+                    response_session_id = chunk.status_update.context_id
+                status = chunk.status_update.status
             elif chunk.HasField("message"):
                 _render_a2a_parts(list(chunk.message.parts))
+
+            reason = _a2a_failure_reason(status) if status is not None else None
+            if reason and not failure_shown:
+                click.secho(f"\n[error]: {reason}", fg="red")
+                rendered_any = failure_shown = True
 
             if verbose:
                 click.echo()

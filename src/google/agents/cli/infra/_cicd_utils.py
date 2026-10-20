@@ -15,6 +15,7 @@
 """Utilities for CI/CD setup and management."""
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -68,7 +69,7 @@ def setup_git_provider(non_interactive: bool = False) -> str:
 
     git_provider = providers[choice - 1][0]
     if git_provider != "github":
-        click.secho("⚠️  Only GitHub is currently supported.", bold=True, fg="yellow")
+        logging.warning("Only GitHub is currently supported.")
         raise ValueError("Unsupported git provider")
 
     return git_provider
@@ -251,9 +252,7 @@ def create_github_connection(
                                 "After completing authentication, return here to continue the setup.\n"
                             )
                     except (json.JSONDecodeError, KeyError) as e:
-                        click.secho(
-                            f"⚠️ Could not extract authentication link: {e}", fg="yellow"
-                        )
+                        logging.warning("Could not extract authentication link: %s", e)
                     time.sleep(10)
                 continue
             else:

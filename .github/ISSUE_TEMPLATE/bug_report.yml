@@ -38,7 +38,7 @@ body:
       label: 'Steps to Reproduce'
       description: 'Please provide the exact steps to reproduce the behavior.'
       placeholder: |-
-        1. Run `agents-cli create my-agent`
+        1. Run `agents-cli create my-agent -y`
         2. Modify `...`
         3. Run `agents-cli deploy`
         4. See error `...`

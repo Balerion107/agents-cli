@@ -30,17 +30,13 @@ import yaml
 from filelock import FileLock, Timeout
 
 from google.agents.cli._fs import delete_folder, first_copy_error, make_folders_writable
+from google.agents.cli._git import is_commit_sha, is_option_like
 from google.agents.cli._runner import run_resolved
 from google.agents.cli.extension._paths import git_cache_dir_name, git_cache_root
 from google.agents.cli.extension._refs import ExtensionRef
 from google.agents.cli.extension._spec import EXTENSION_FILE
 from google.agents.cli.scaffold.utils.fs import source_ignore_patterns
 
-# Only a full 40-char commit SHA is unambiguous. A short/partial hex string
-# could instead be a branch or tag named like hex (e.g. "cafe123"), so anything
-# shorter than 40 goes through ls-remote ref resolution rather than being
-# treated as an already-resolved commit.
-_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # An extension name becomes a directory component under the vendoring root, so it
 # must not contain path separators or traversal — reject anything else.
 _SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -224,9 +220,31 @@ def _local_source_dir(ref: ExtensionRef) -> Path:
     src = ref.local_path
     if src is None or not src.exists():
         raise ResolverError(f"local extension path not found: {ref.local_path}.")
-    sub = src / ref.selector if ref.selector else src
+    sub = _inside(src, ref.selector) if ref.selector else src
     if not (sub / EXTENSION_FILE).exists():
         raise ResolverError(f"{sub} has no {EXTENSION_FILE}.")
+    return sub
+
+
+def _inside(root: Path, selector: str) -> Path:
+    """Return ``root / selector``, or raise if it resolves outside ``root``.
+
+    parse_ref keeps `..` and absolute paths out of a selector, but a symlink
+    (or Windows junction) at any of its components would still carry the copy
+    out of the source: copytree follows ``src`` itself, and ``skip_symlinks``
+    only filters the entries beneath it.
+    """
+    sub = root / selector
+    try:
+        inside = sub.resolve().is_relative_to(root.resolve())
+    # Python 3.11 reports a symlink loop as RuntimeError rather than OSError.
+    except (OSError, RuntimeError) as e:
+        raise ResolverError(f"could not resolve {sub}: {e}") from e
+    if not inside:
+        raise ResolverError(
+            f"{sub} leads outside {root} through a symlink; an extension selector "
+            "must name a real directory inside the source."
+        )
     return sub
 
 
@@ -262,15 +280,28 @@ def resolve_sha(ref: ExtensionRef) -> str:
     """
     if ref.kind == "local":
         return LOCAL_SHA
-    if ref.ref and _SHA_RE.match(ref.ref):
+    # Anything short of a full SHA goes through ls-remote: a short hex string
+    # could be a branch or tag named like hex.
+    if ref.ref and is_commit_sha(ref.ref):
         return ref.ref
     target = ref.ref or "HEAD"
-    result = _git("ls-remote", _clone_url(ref), target)
+    if is_option_like(target):
+        raise ResolverError(
+            f"invalid ref {target!r}: pass a branch, tag, or commit SHA, "
+            "which cannot start with '-'."
+        )
+    result = _git("ls-remote", "--", _clone_url(ref), target)
     if result.returncode != 0 or not result.stdout.strip():
         raise ResolverError(
             f"could not resolve {target!r} in {ref.repo!r}; check the repo and ref."
         )
-    return result.stdout.split()[0]
+    sha = result.stdout.split()[0]
+    if not is_commit_sha(sha):
+        raise ResolverError(
+            f"git ls-remote returned {sha!r} for {target!r} in {ref.repo!r}, "
+            "which is not a commit SHA."
+        )
+    return sha
 
 
 def _extension_name_from_dir(extension_dir: Path, fallback: str) -> str:
@@ -386,9 +417,11 @@ def materialize(
     checkout = _checkout(ref, sha)
     if ref.kind == "first_party":
         # First-party extensions live under extensions/<selector>/ in the repo.
-        sub = checkout / "extensions" / ref.selector if ref.selector else checkout
+        sub = (
+            _inside(checkout, f"extensions/{ref.selector}") if ref.selector else checkout
+        )
     else:
-        sub = checkout / ref.selector if ref.selector else checkout
+        sub = _inside(checkout, ref.selector) if ref.selector else checkout
     if not (sub / EXTENSION_FILE).exists():
         raise ResolverError(
             f"{ref.repo}#{ref.selector or ''} has no {EXTENSION_FILE} at the pinned commit."
@@ -408,6 +441,14 @@ def _checkout(ref: ExtensionRef, sha: str) -> Path:
 
     Returns the worktree root path.
     """
+    # The SHA can come from a committed extension list, and git would read
+    # anything but a commit (e.g. ``--upload-pack=<cmd>``) as an option.
+    if not is_commit_sha(sha):
+        raise ResolverError(
+            f"invalid commit SHA {sha!r}: expected 40 lowercase hex characters. "
+            "If it is the `sha:` recorded in agents-cli-extensions.yaml, fix it "
+            "or remove and re-add the extension."
+        )
     cache = git_cache_root()
     cache.mkdir(parents=True, exist_ok=True)
     if ref.repo is None:
@@ -445,7 +486,7 @@ def _clone(repo_dir: Path, url: str, repo: str) -> None:
     fallback does not unshallow.
     """
     base = ["clone", "--quiet", "--no-checkout"]
-    res = _git(*base, "--filter=blob:none", url, str(repo_dir))
+    res = _git(*base, "--filter=blob:none", "--", url, str(repo_dir))
     if res.returncode == 0:
         return
 
@@ -456,7 +497,7 @@ def _clone(repo_dir: Path, url: str, repo: str) -> None:
     # option — so retry without it rather than breaking `extension add` outright.
     logging.debug("Blobless clone of %s failed, retrying in full: %s", repo, res.stderr)
     shutil.rmtree(repo_dir, ignore_errors=True)
-    res = _git(*base, url, str(repo_dir))
+    res = _git(*base, "--", url, str(repo_dir))
     if res.returncode != 0:
         raise ResolverError(f"git clone failed for {repo}: {res.stderr.strip()}")
 
@@ -465,7 +506,7 @@ def _checkout_locked(repo_dir: Path, url: str, repo: str, sha: str) -> Path:
     if not (repo_dir / ".git").exists():
         _clone(repo_dir, url, repo)
 
-    fetch = _git("-C", str(repo_dir), "fetch", "--quiet", "origin", sha)
+    fetch = _git("-C", str(repo_dir), "fetch", "--quiet", "--", "origin", sha)
     # Some hosts reject fetching an arbitrary SHA; fall back to a full fetch.
     if fetch.returncode != 0:
         _git("-C", str(repo_dir), "fetch", "--quiet", "--all")

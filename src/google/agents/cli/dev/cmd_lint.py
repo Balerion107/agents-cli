@@ -15,12 +15,14 @@
 """agents-cli lint command — run code linting."""
 
 import logging
+from pathlib import Path
 
 import click
 
 from google.agents.cli import _tools
 from google.agents.cli._project import chdir_project_root, read_project_config
 from google.agents.cli._runner import run
+from google.agents.cli._uv_index import sync_failure_message, uv_index_env
 from google.agents.cli.scaffold.utils.language import dispatch_language
 
 _GOLANGCI_LINT = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2"
@@ -64,46 +66,57 @@ def _lint_python(*, fix: bool, mypy: bool, skip_codespell: bool, skip_ty: bool) 
       - ty check .             (unless ``skip_ty``)
       - mypy .                 (only when ``mypy`` is set)
     """
+    # Keep every uv call on the scaffold's index so `uv run` doesn't re-lock
+    # against a machine-wide mirror right after the sync.
+    env = uv_index_env(Path.cwd())
     # Sync lint extras before running
     run(
         ["uv", "sync", "--dev", "--extra", "lint"],
-        check_err_msg="Failed to sync lint dependencies",
+        env=env,
+        check_err_msg=sync_failure_message("Failed to sync lint dependencies", env),
     )
 
     if fix:
         run(
             ["uv", "run", "ruff", "check", ".", "--fix"],
+            env=env,
             check_err_msg="Ruff check --fix failed",
         )
         run(
             ["uv", "run", "ruff", "format", "."],
+            env=env,
             check_err_msg="Ruff format failed",
         )
     else:
         run(
             ["uv", "run", "ruff", "check", "."],
+            env=env,
             check_err_msg="Ruff check failed",
         )
         run(
             ["uv", "run", "ruff", "format", ".", "--check"],
+            env=env,
             check_err_msg="Ruff format check failed",
         )
 
     if not skip_codespell:
         run(
             ["uv", "run", "codespell"],
+            env=env,
             check_err_msg="Codespell check failed",
         )
 
     if not skip_ty:
         run(
             ["uv", "run", "ty", "check", "."],
+            env=env,
             check_err_msg="ty type check failed",
         )
 
     if mypy:
         run(
             ["uv", "run", "mypy", "."],
+            env=env,
             check_err_msg="Mypy check failed",
         )
 

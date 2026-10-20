@@ -13,10 +13,25 @@
 # limitations under the License.
 
 steps:
+  # Pre-fetch Go modules with retries so a dropped module proxy connection
+  # doesn't fail the build. Later steps reuse them via GOMODCACHE, which lives
+  # in /workspace because that is the only directory shared between steps.
+  - name: "golang:1.26"
+    id: download-modules
+    entrypoint: /bin/bash
+    env:
+      - "GOMODCACHE=/workspace/.gomodcache"
+    args:
+      - "-c"
+      - |
+        go mod download || (sleep 10 && go mod download) || (sleep 20 && go mod download)
+
   # Run unit tests
   - name: "golang:1.26"
     id: unit-tests
     entrypoint: /bin/bash
+    env:
+      - "GOMODCACHE=/workspace/.gomodcache"
     args:
       - "-c"
       - |
@@ -27,6 +42,7 @@ steps:
     id: integration-tests
     entrypoint: /bin/bash
     env:
+      - "GOMODCACHE=/workspace/.gomodcache"
       - "GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"
       - "GOOGLE_CLOUD_LOCATION=global"
       - "GOOGLE_GENAI_USE_VERTEXAI=True"

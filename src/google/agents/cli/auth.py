@@ -25,8 +25,10 @@ export and persist the environment variable themselves.
 """
 
 import enum
+import logging
 import os
 import subprocess
+import warnings
 import webbrowser
 from typing import Any
 
@@ -65,10 +67,10 @@ def _api_key_instructions(var_name):
         "  If you create an ADK project, you can also store the API key under .env in the agent folder."
     )
     click.echo()
-    click.secho(
-        "  ⚠️  Warning: Be aware that when you export API keys or service account paths in\n"
-        "  your shell configuration file, any process launched from that shell can read them.",
-        fg="yellow",
+    logging.warning(
+        "Be aware that when you export API keys or service account paths in "
+        "your shell configuration file, any process launched from that shell "
+        "can read them."
     )
     click.echo()
 
@@ -77,6 +79,10 @@ def _api_key_instructions(var_name):
 
 
 _adc_credentials = None
+
+_QUOTA_PROJECT_WARNING_PREFIX = (
+    "Your application has authenticated using end user credentials"
+)
 
 
 def get_adc_credentials() -> tuple[Any, str | None]:
@@ -95,13 +101,27 @@ def get_adc_credentials() -> tuple[Any, str | None]:
     """
     global _adc_credentials
     if _adc_credentials is None:
-        import google.auth
-
-        _adc_credentials = google.auth.default(
+        _adc_credentials = default_credentials(
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
 
     return _adc_credentials
+
+
+def default_credentials(**kwargs: Any) -> tuple[Any, str | None]:
+    """``google.auth.default()`` without its missing-quota-project warning.
+
+    The warning is advice for developers of apps that call Google APIs with
+    gcloud user credentials; printed by agents-cli it only alarms users.
+    """
+    import google.auth
+
+    # Not catch_warnings(): it isn't thread-safe, and telemetry calls this from
+    # a background thread. Repeat calls don't stack duplicate filters.
+    warnings.filterwarnings(
+        "ignore", message=_QUOTA_PROJECT_WARNING_PREFIX, category=UserWarning
+    )
+    return google.auth.default(**kwargs)
 
 
 def _setup_google_cloud_adc():
@@ -418,10 +438,9 @@ def _check_valid_adc():
     except ToolNotFoundError:
         # If gcloud is not installed, fallback to the slower google.auth.default() means of checking
         try:
-            import google.auth
             from google.auth.transport.requests import Request as GoogleAuthRequest
 
-            credentials, _ = google.auth.default()
+            credentials, _ = default_credentials()
             credentials.refresh(GoogleAuthRequest())
             return True
         except Exception:

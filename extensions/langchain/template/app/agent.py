@@ -35,5 +35,12 @@ def get_weather(query: str) -> str:
 
 
 root_agent: CompiledStateGraph = create_agent(
-    model=llm, tools=[get_weather], system_prompt="You are a helpful assistant"
+    model=llm,
+    tools=[get_weather],
+    system_prompt="You are a helpful assistant",
+    # Keep in sync with create_params.root_agent_name in agents-cli-manifest.yaml:
+    # telemetry reports this name as gen_ai.agent.name, and agents-cli reports the
+    # manifest's value. Renaming the agent only here makes the two disagree, and
+    # anything selecting traces by name stops finding this agent's.
+    name="{{cookiecutter.root_agent_name}}",
 )

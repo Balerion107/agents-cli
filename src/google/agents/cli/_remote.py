@@ -20,6 +20,8 @@ how a ``--url`` is classified and what auth token it gets.
 
 from __future__ import annotations
 
+import ipaddress
+import logging
 import re
 from typing import NamedTuple
 from urllib.parse import urlparse, urlsplit, urlunsplit
@@ -155,12 +157,13 @@ def build_remote_headers(
 
     Uses an **access token** for Gemini platform / Agent Runtime URLs and an
     **identity token** (with the service URL as audience) for everything
-    else (Cloud Run, GKE, etc.).
+    else (Cloud Run, GKE, etc.). Loopback URLs (the local dev server) get
+    no token.
     """
     headers: dict[str, str] = {"Content-Type": "application/json"}
     parsed = dict(_parse_header(h) for h in custom_headers)
 
-    if "Authorization" not in parsed:
+    if "Authorization" not in parsed and not _is_loopback_url(url):
         try:
             if is_agent_runtime_url(url):
                 token = get_access_token()
@@ -170,10 +173,20 @@ def build_remote_headers(
                 token = get_id_token(audience)
             headers["Authorization"] = f"Bearer {token}"
         except Exception as exc:
-            click.echo(
-                f"Warning: Could not obtain credentials: {exc}",
-                err=True,
-            )
+            logging.warning("Could not obtain credentials: %s", exc)
 
     headers.update(parsed)
     return headers
+
+
+def _is_loopback_url(url: str) -> bool:
+    host = urlparse(url).hostname or ""
+    # *.localhost always resolves to loopback (RFC 6761).
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    # 0.0.0.0 / :: is what local servers print as their bind address.
+    return ip.is_loopback or ip.is_unspecified

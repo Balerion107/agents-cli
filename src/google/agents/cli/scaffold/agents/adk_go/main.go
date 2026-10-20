@@ -117,6 +117,11 @@ func main() {
 	var newArgs []string
 	for _, arg := range args {
 		newArgs = append(newArgs, arg)
+		// The web launcher's 15s default write timeout cuts off /run and A2A
+		// replies for turns slower than that (e.g. a tool call plus reasoning).
+		if arg == "web" && !hasFlag("write-timeout") {
+			newArgs = append(newArgs, "-write-timeout", "10m")
+		}
 		if arg == "a2a" && !hasFlag("a2a_agent_url") {
 			newArgs = append(newArgs, "-a2a_agent_url", appURL)
 		}

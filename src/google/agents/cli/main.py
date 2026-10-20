@@ -370,7 +370,8 @@ def main():
     \b
     Quick start:
       agents-cli setup                 Install skills to your coding agent
-      agents-cli create my-agent       Create a new agent project
+      agents-cli create my-agent -i    Create a new agent project interactively
+      agents-cli create my-agent -y    Create with defaults (adk, agent_runtime)
       agents-cli playground            Start the local playground
       agents-cli eval run              Run agent inference and grade the traces
       agents-cli scaffold enhance .    Add deployment/CI-CD to a project
@@ -381,9 +382,11 @@ def main():
     if "--interactive" not in sys.argv and "-i" not in sys.argv:
         os.environ["CLOUDSDK_CORE_DISABLE_PROMPTS"] = "1"
 
+    from google.agents.cli._output import configure_logging
     from google.agents.cli._skills_check import check_skills_version
     from google.agents.cli.scaffold.utils.version import display_update_message
 
+    configure_logging()
     display_update_message()
     check_skills_version()
 

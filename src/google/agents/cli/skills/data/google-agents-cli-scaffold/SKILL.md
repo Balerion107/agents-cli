@@ -12,7 +12,7 @@ description: >
 metadata:
   author: Google
   license: Apache-2.0
-  version: 1.10.0
+  version: 1.11.0
   requires:
     bins:
       - agents-cli
@@ -105,7 +105,7 @@ agents-cli scaffold upgrade --force        # Overwrite scaffolding files when sm
 agents-cli scaffold upgrade --force --dry-run  # List what --force would overwrite
 ```
 
-`--force` is a fallback for when smart-merge fails. It overwrites scaffolding files with the new template and keeps agent code, config files, `README.md`, the agent guidance file and eval datasets and config. It never removes dependencies or files the new template dropped (for example, a removed CI workflow), so remove unused ones by hand. Afterwards, check your imports and run your tests. Use `--dry-run` first to see which files change.
+`--force` is a fallback for when smart-merge fails. Smart-merge also stops when the agents-cli version that created the project is not on PyPI, because it needs that version's template; use `--force` then too. It overwrites scaffolding files with the new template and keeps agent code, config files, `README.md`, the agent guidance file and eval datasets and config. It never removes dependencies or files the new template dropped (for example, a removed CI workflow), so remove unused ones by hand. Afterwards, check your imports and run your tests. Use `--dry-run` first to see which files change.
 
 ### Execution Modes
 
@@ -135,7 +135,7 @@ agents-cli scaffold enhance . --cicd-runner github_actions
 > **`adk` and `adk_go` are the only built-in templates.** `adk` is the default, so a Go project
 > needs `--agent adk_go` explicitly.
 > Other frameworks ship as template repos you scaffold
-> from directly: `--agent google/agents-cli/extensions/langchain/template@v1.10.0`, with nothing installed. The first-party LangChain
+> from directly: `--agent google/agents-cli/extensions/langchain/template@v1.11.0`, with nothing installed. The first-party LangChain
 > template is `extensions/langchain/template/` in the agents-cli repo; see
 > `/google-agents-cli-workflow` → `references/extension.md` to publish your own. Capabilities
 > beyond the template — retrieval, sandboxed execution, memory, OAuth, guardrails — are

@@ -157,6 +157,23 @@ def _is_pid_alive(pid: int) -> bool:
 STARTING_CLAIM_TTL_SECONDS = 600.0  # 10 minutes
 
 
+def parse_started_at(value: Any) -> datetime.datetime | None:
+    """A stored ``started_at`` timestamp as an aware UTC datetime, or None.
+
+    Tolerates missing or placeholder values (e.g. "unknown"). Naive timestamps
+    are treated as UTC.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.UTC)
+    return parsed
+
+
 def is_starting_claim_stale(
     claim_dict: dict[str, Any],
     ttl_seconds: float = STARTING_CLAIM_TTL_SECONDS,
@@ -180,17 +197,11 @@ def is_starting_claim_stale(
     ):
         return not _is_pid_alive(owner_pid)
 
-    started_at_str = claim_dict.get("started_at")
-    if started_at_str:
-        try:
-            started_at = datetime.datetime.fromisoformat(started_at_str)
-            if started_at.tzinfo is None:
-                started_at = started_at.replace(tzinfo=datetime.UTC)
-            return (
-                datetime.datetime.now(tz=datetime.UTC) - started_at
-            ).total_seconds() > ttl_seconds
-        except (ValueError, TypeError):
-            pass
+    started_at = parse_started_at(claim_dict.get("started_at"))
+    if started_at is not None:
+        return (
+            datetime.datetime.now(tz=datetime.UTC) - started_at
+        ).total_seconds() > ttl_seconds
 
     return False
 

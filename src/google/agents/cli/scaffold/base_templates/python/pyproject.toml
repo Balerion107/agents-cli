@@ -5,8 +5,10 @@ description = ""
 authors = [
     {name = "Your Name", email = "your@email.com"},
 ]
-{% set aiplatform_floor = "1.156.0" %}
-{% set aiplatform_upper = "2.0.0" %}
+{# google-cloud-aiplatform and google-cloud-agentplatform both install the
+    top-level `agentplatform` package, so keep them on the same range. #}
+{% set aiplatform_floor = "2.2.0" %}
+{% set aiplatform_upper = "3.0.0" %}
 dependencies = [
 {%- for dep in cookiecutter.extra_dependencies %}
     "{{ dep }}",
@@ -22,7 +24,8 @@ dependencies = [
     "sqlalchemy[asyncio]>=2,<3",
     "python-multipart>=0.0.20,<1.0.0",
 {%- elif cookiecutter.deployment_target == 'agent_runtime' %}
-    "google-cloud-aiplatform[evaluation,agent-engines]>={{ aiplatform_floor }},<{{ aiplatform_upper }}",
+    "google-cloud-agentplatform[agent-engines]>={{ aiplatform_floor }},<{{ aiplatform_upper }}",
+    "google-cloud-aiplatform[evaluation]>={{ aiplatform_floor }},<{{ aiplatform_upper }}",
     "protobuf>=6.31.1,<7.0.0",
 {%- endif %}
 ]

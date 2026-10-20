@@ -67,10 +67,10 @@ def get_current_time(query: str) -> str:
 
 
 root_agent = Agent(
-    # Keep in sync with agents-cli-manifest.yaml: agents-cli derives this name
-    # from the project `name:` recorded there, and telemetry reports it as
-    # gen_ai.agent.name. Renaming the agent only here makes the two disagree,
-    # and anything selecting traces by name stops finding this agent's.
+    # Keep in sync with create_params.root_agent_name in agents-cli-manifest.yaml:
+    # telemetry reports this name as gen_ai.agent.name, and agents-cli reports the
+    # manifest's value. Renaming the agent only here makes the two disagree, and
+    # anything selecting traces by name stops finding this agent's.
     name="{{cookiecutter.root_agent_name}}",
     model=Gemini(
         model=MODEL,
